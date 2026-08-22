@@ -60,7 +60,20 @@ public class AccessTicketHandler
 
         while (_ticketCache.TryGetValue(itemId, out var ticketTask))
         {
-            ticket = await ticketTask;
+            try
+            {
+                ticket = await ticketTask;
+            }
+            catch
+            {
+                // The cached request failed (e.g. TVH unreachable). Drop it so
+                // the next attempt can request a fresh ticket, otherwise this
+                // item could never be played again without a restart.
+                _ticketCache.TryRemove(new KeyValuePair<string, Task<Ticket>>(itemId, ticketTask));
+                ticket = null;
+                break;
+            }
+
             if (ticket.Expires > now)
             {
                 return ticket; // non-expired ticket from cache
@@ -70,7 +83,16 @@ public class AccessTicketHandler
             _ticketCache.TryRemove(new KeyValuePair<string, Task<Ticket>>(itemId, ticketTask));
         }
 
-        return await _ticketCache.GetOrAdd(itemId, _ => GetTicketRecord(itemId, cancellationToken, ticket, now));
+        var newTicketTask = _ticketCache.GetOrAdd(itemId, _ => GetTicketRecord(itemId, cancellationToken, ticket, now));
+        try
+        {
+            return await newTicketTask;
+        }
+        catch
+        {
+            _ticketCache.TryRemove(new KeyValuePair<string, Task<Ticket>>(itemId, newTicketTask));
+            throw;
+        }
     }
 
     private Task<Ticket> GetTicketRecord(string itemId, CancellationToken cancellation, Ticket currentRecord, DateTime now)
