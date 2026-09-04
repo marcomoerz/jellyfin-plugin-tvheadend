@@ -17,8 +17,6 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Model.LiveTv;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.HTSP;
-using TVHeadEnd.HTSP_Responses;
-using TVHeadEnd.TimeoutHelper;
 
 namespace TVHeadEnd
 {
@@ -153,33 +151,33 @@ namespace TVHeadEnd
             return _htsConnectionHandler.getLiveTvService();
         }
 
-        private Task<int> WaitForInitialLoadTask(CancellationToken cancellationToken)
+        private Task<bool> WaitForInitialLoadTask(CancellationToken cancellationToken)
         {
-            return Task.Factory.StartNew<int>(() => _htsConnectionHandler.WaitForInitialLoad(cancellationToken), cancellationToken);
+            return _htsConnectionHandler.WaitForInitialLoadAsync(cancellationToken);
         }
         public async Task<IEnumerable<MyRecordingInfo>> GetAllRecordingsAsync(CancellationToken cancellationToken)
         {
             // retrieve all 'Pending', 'Inprogress' and 'Completed' recordings
             // we don't deliver the 'Pending' recordings
 
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
+            bool loaded = await WaitForInitialLoadTask(cancellationToken);
+            if (!loaded || cancellationToken.IsCancellationRequested)
             {
                 _logger.LogDebug("[TVHclient] GetAllRecordingsAsync - Not initialized ");
                 return [];
             }
 
-            TaskWithTimeoutRunner<IEnumerable<MyRecordingInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<MyRecordingInfo>>(TIMEOUT);
-            TaskWithTimeoutResult<IEnumerable<MyRecordingInfo>> twtRes = await
-                twtr.RunWithTimeout(_htsConnectionHandler.BuildDvrInfos(cancellationToken));
-
-            if (twtRes.HasTimeout)
+            try
+            {
+                return await _htsConnectionHandler.BuildDvrInfos(cancellationToken)
+                    .WaitAsync(TIMEOUT, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
             {
                 _logger.LogDebug("[TVHclient] GetAllRecordingsAsync - Timeout");
                 return [];
             }
-
-            return twtRes.Result;
         }
 
         public bool CanDelete(BaseItem item)

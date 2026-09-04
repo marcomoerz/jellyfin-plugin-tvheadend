@@ -10,10 +10,15 @@ using TVHeadEnd.HTSP;
 
 namespace TVHeadEnd.HTSP_Responses
 {
-    public class GetEventsResponseHandler : HTSResponseHandler
+    /// <summary>
+    /// Turns a TVHeadend 'getEvents' reply into Jellyfin program entries.
+    /// </summary>
+    /// <remarks>
+    /// This used to be a callback that filled itself in the background while the caller polled
+    /// a flag. Now the caller awaits the reply and hands it over, so this is a pure parser.
+    /// </remarks>
+    public class GetEventsResponseHandler
     {
-        private volatile Boolean _dataReady = false;
-
         private readonly DateTime _initialDateTimeUTC = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
         private readonly DateTime _startDateTimeUtc, _endDateTimeUtc;
@@ -33,7 +38,7 @@ namespace TVHeadEnd.HTSP_Responses
             _result = new List<ProgramInfo>();
         }
 
-        public void handleResponse(HTSMessage response)
+        public IEnumerable<ProgramInfo> Parse(HTSMessage response)
         {
             _logger.LogDebug("[TVHclient] GetEventsResponseHandler.handleResponse: received answer from TVH server: {msg}", response.ToString());
 
@@ -727,7 +732,7 @@ namespace TVHeadEnd.HTSP_Responses
                     _result.Add(pi);
                 }
             }
-            _dataReady = true;
+            return _result;
         }
 
         private String createPiInfo(ProgramInfo pi)
@@ -759,20 +764,6 @@ namespace TVHeadEnd.HTSP_Responses
             sb.Append("\n");
 
             return sb.ToString();
-        }
-
-        public Task<IEnumerable<ProgramInfo>> GetEvents(CancellationToken cancellationToken, string channelId)
-        {
-            return Task.Factory.StartNew<IEnumerable<ProgramInfo>>(() =>
-            {
-                while (!_dataReady || cancellationToken.IsCancellationRequested)
-                {
-                    Thread.Sleep(500);
-                }
-                //_logger.LogDebug("[TVHclient] GetEventsResponseHandler.GetEvents: channelId={cid}  / dataReady={dr}  / cancellationToken.IsCancellationRequested={cancelreq}",
-                //    channelId, _dataReady, cancellationToken.IsCancellationRequested);
-                return _result;
-            });
         }
     }
 }

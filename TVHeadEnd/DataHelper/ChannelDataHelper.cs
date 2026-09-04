@@ -13,21 +13,17 @@ namespace TVHeadEnd.DataHelper
     public class ChannelDataHelper
     {
         private readonly ILogger<ChannelDataHelper> _logger;
-        private readonly TunerDataHelper _tunerDataHelper;
         private readonly Dictionary<int, HTSMessage> _data;
         private readonly Dictionary<string, string> _piconData;
         private string _channelType4Other = "Ignore";
 
-        public ChannelDataHelper(ILogger<ChannelDataHelper> logger, TunerDataHelper tunerDataHelper)
+        public ChannelDataHelper(ILogger<ChannelDataHelper> logger)
         {
             _logger = logger;
-            _tunerDataHelper = tunerDataHelper;
 
             _data = new Dictionary<int, HTSMessage>();
             _piconData = new Dictionary<string, string>();
         }
-
-        public ChannelDataHelper(ILogger<ChannelDataHelper> logger) : this(logger, null) {}
 
         public void SetChannelType4Other(string channelType4Other)
         {
@@ -39,21 +35,12 @@ namespace TVHeadEnd.DataHelper
             lock (_data)
             {
                 _data.Clear();
-                if (_tunerDataHelper != null)
-                {
-                    _tunerDataHelper.clean();
-                }
+                _piconData.Clear();
             }
         }
 
         public void Add(HTSMessage message)
         {
-            if (_tunerDataHelper != null)
-            {
-                // TVHeadend don't send the information we need
-                // _tunerDataHelper.addTunerInfo(message);
-            }
-
             lock (_data)
             {
                 try
@@ -95,12 +82,12 @@ namespace TVHeadEnd.DataHelper
 
         public string GetChannelIcon4ChannelId(string channelId)
         {
-            string result;
-            if (_piconData.TryGetValue(channelId, out result))
+            // Same lock as the writer in BuildChannelInfos: an unsynchronised read of a
+            // Dictionary that another thread is writing can spin forever inside the lookup.
+            lock (_data)
             {
-                return result;
+                return _piconData.TryGetValue(channelId, out string result) ? result : null;
             }
-            return result;
         }
 
         public Task<IEnumerable<ChannelInfo>> BuildChannelInfos(CancellationToken cancellationToken)

@@ -6,7 +6,6 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using TVHeadEnd.HTSP;
 using TVHeadEnd.HTSP_Responses;
-using TVHeadEnd.TimeoutHelper;
 
 namespace TVHeadEnd;
 
@@ -131,17 +130,15 @@ public class AccessTicketHandler
              attempt <= lastAttempt && !cancellation.IsCancellationRequested;
              attempt++)
         {
-            var runner = new TaskWithTimeoutRunner<HTSMessage>(_requestTimeout * attempt);
-            var result = await runner.RunWithTimeout(Task.Factory.StartNew(() =>
+            try
             {
-                var response = new LoopBackResponseHandler();
-                _htsConnectionHandler.SendMessage(request, response);
-                return response.getResponse();
-            }, cancellation));
-
-            if (!result.HasTimeout)
+                return await _htsConnectionHandler
+                    .SendRequestAsync(request, _requestTimeout * attempt, cancellation)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
             {
-                return result.Result;
+                // Each attempt gets a longer grace period; fall through and try again.
             }
         }
 
