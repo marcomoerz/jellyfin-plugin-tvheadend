@@ -57,102 +57,32 @@ namespace TVHeadEnd
 
         public async Task CancelSeriesTimerAsync(string timerId, CancellationToken cancellationToken)
         {
-            bool timeOut = -1 == await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut)
-            {
-                throw new TimeoutException(
-                    $"CancelSeriesTimerAsync('{timerId}'): TVHeadend connection not ready");
-            }
-            cancellationToken.ThrowIfCancellationRequested();
+            string operation = $"CancelSeriesTimerAsync('{timerId}')";
+            await EnsureConnectionReady(operation, cancellationToken);
 
             HTSMessage deleteAutorecMessage = new HTSMessage();
             deleteAutorecMessage.Method = "deleteAutorecEntry";
             deleteAutorecMessage.putField("id", timerId);
 
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Factory.StartNew(() =>
-            {
-                LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                _htsConnectionHandler.SendMessage(deleteAutorecMessage, lbrh);
-                return lbrh.getResponse();
-            }, cancellationToken));
+            HtspResult result = await SendAsync(deleteAutorecMessage, cancellationToken);
+            ThrowOnFailure(result, operation, missingIsSuccess: true);
 
-            if (twtRes.HasTimeout)
-            {
-                throw new TimeoutException(
-                    $"CancelSeriesTimerAsync('{timerId}'): timeout after {_timeout}");
-            }
-
-            HTSMessage response = twtRes.Result;
-
-            if (Succeeded(response))
-            {
-                _lastRecordingChange = DateTime.UtcNow;
-                return;
-            }
-
-            string reason = GetFailureReason(response);
-
-            if (IsAlreadyGone(reason))
-            {
-                _logger.LogInformation(
-                    "CancelSeriesTimerAsync: autorec entry '{Id}' already gone, treating as success", timerId);
-                _lastRecordingChange = DateTime.UtcNow;
-                return;
-            }
-
-            throw new InvalidOperationException(
-                $"CancelSeriesTimerAsync('{timerId}') failed: '{reason}'");
+            _lastRecordingChange = DateTime.UtcNow;
         }
 
         public async Task CancelTimerAsync(string timerId, CancellationToken cancellationToken)
         {
-            bool timeOut = -1 == await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut)
-            {
-                throw new TimeoutException(
-                    $"CancelTimerAsync('{timerId}'): TVHeadend connection not ready");
-            }
-            cancellationToken.ThrowIfCancellationRequested();
+            string operation = $"CancelTimerAsync('{timerId}')";
+            await EnsureConnectionReady(operation, cancellationToken);
 
             HTSMessage cancelTimerMessage = new HTSMessage();
             cancelTimerMessage.Method = "cancelDvrEntry";
             cancelTimerMessage.putField("id", timerId);
 
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Factory.StartNew(() =>
-            {
-                LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                _htsConnectionHandler.SendMessage(cancelTimerMessage, lbrh);
-                return lbrh.getResponse();
-            }, cancellationToken));
+            HtspResult result = await SendAsync(cancelTimerMessage, cancellationToken);
+            ThrowOnFailure(result, operation, missingIsSuccess: true);
 
-            if (twtRes.HasTimeout)
-            {
-                throw new TimeoutException(
-                    $"CancelTimerAsync('{timerId}'): timeout after {_timeout}");
-            }
-
-            HTSMessage response = twtRes.Result;
-
-            if (Succeeded(response))
-            {
-                _lastRecordingChange = DateTime.UtcNow;
-                return;
-            }
-
-            string reason = GetFailureReason(response);
-
-            if (IsAlreadyGone(reason))
-            {
-                _logger.LogInformation(
-                    "CancelTimerAsync: DVR entry '{Id}' already gone, treating as success", timerId);
-                _lastRecordingChange = DateTime.UtcNow;
-                return;
-            }
-
-            throw new InvalidOperationException(
-                $"CancelTimerAsync('{timerId}') failed: '{reason}'");
+            _lastRecordingChange = DateTime.UtcNow;
         }
 
         public async Task CloseLiveStream(string subscriptionId, CancellationToken cancellationToken)
@@ -174,13 +104,8 @@ namespace TVHeadEnd
 
         public async Task CreateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
         {
-            bool timeOut = -1 == await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut)
-            {
-                throw new TimeoutException(
-                    $"CreateTimerAsync('{info.Name}'): TVHeadend connection not ready");
-            }
-            cancellationToken.ThrowIfCancellationRequested();
+            string operation = $"CreateTimerAsync('{info.Name}')";
+            await EnsureConnectionReady(operation, cancellationToken);
 
             HTSMessage createTimerMessage = new HTSMessage();
             createTimerMessage.Method = "addDvrEntry";
@@ -208,83 +133,31 @@ namespace TVHeadEnd
                     + "falling back to a time based recording", info.ProgramId);
             }
 
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Factory.StartNew(() =>
-            {
-                LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                _htsConnectionHandler.SendMessage(createTimerMessage, lbrh);
-                return lbrh.getResponse();
-            }, cancellationToken));
-
-            if (twtRes.HasTimeout)
-            {
-                throw new TimeoutException(
-                    $"CreateTimerAsync('{info.Name}'): timeout after {_timeout}");
-            }
-
-            HTSMessage response = twtRes.Result;
-
-            if (Succeeded(response))
-            {
-                _lastRecordingChange = DateTime.UtcNow;
-                return;
-            }
+            HtspResult result = await SendAsync(createTimerMessage, cancellationToken);
 
             // Returning normally would tell Jellyfin the timer exists, and the user would be left
             // waiting for a recording that was never scheduled.
-            throw new InvalidOperationException(
-                $"CreateTimerAsync('{info.Name}') failed: '{GetFailureReason(response)}'");
+            ThrowOnFailure(result, operation, missingIsSuccess: false);
+
+            _lastRecordingChange = DateTime.UtcNow;
         }
 
         public async Task DeleteRecordingAsync(string recordingId, CancellationToken cancellationToken)
         {
-            bool timeOut = -1 == await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut)
-            {
-                throw new TimeoutException(
-                    $"DeleteRecordingAsync('{recordingId}'): TVHeadend connection not ready");
-            }
-            cancellationToken.ThrowIfCancellationRequested();
+            string operation = $"DeleteRecordingAsync('{recordingId}')";
+            await EnsureConnectionReady(operation, cancellationToken);
 
             HTSMessage deleteRecordingMessage = new HTSMessage();
             deleteRecordingMessage.Method = "deleteDvrEntry";
             deleteRecordingMessage.putField("id", recordingId);
 
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Factory.StartNew(() =>
-            {
-                LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                _htsConnectionHandler.SendMessage(deleteRecordingMessage, lbrh);
-                return lbrh.getResponse();
-            }, cancellationToken));
+            HtspResult result = await SendAsync(deleteRecordingMessage, cancellationToken);
 
-            if (twtRes.HasTimeout)
-            {
-                throw new TimeoutException(
-                    $"DeleteRecordingAsync('{recordingId}'): timeout after {_timeout}");
-            }
+            // An entry already removed in TVHeadend is the desired end state. Reporting that as a
+            // failure would orphan the item in Jellyfin's database with no way to remove it.
+            ThrowOnFailure(result, operation, missingIsSuccess: true);
 
-            HTSMessage response = twtRes.Result;
-
-            if (Succeeded(response))
-            {
-                _lastRecordingChange = DateTime.UtcNow;
-                return;
-            }
-
-            string reason = GetFailureReason(response);
-
-            if (IsAlreadyGone(reason))
-            {
-                // Entry removed in tvheadend
-                _logger.LogInformation(
-                    "DeleteRecordingAsync: DVR entry '{Id}' already gone, treating as success", recordingId);
-                _lastRecordingChange = DateTime.UtcNow;
-                return;
-            }
-
-            throw new InvalidOperationException(
-                $"DeleteRecordingAsync('{recordingId}') failed: '{reason}'");
+            _lastRecordingChange = DateTime.UtcNow;
         }
 
         public async Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken cancellationToken)
@@ -643,12 +516,8 @@ namespace TVHeadEnd
 
         public async Task UpdateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
         {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("LiveTvService.UpdateTimerAsync: call cancelled or timed out");
-                return;
-            }
+            string operation = $"UpdateTimerAsync('{info.Id}')";
+            await EnsureConnectionReady(operation, cancellationToken);
 
             HTSMessage updateTimerMessage = new HTSMessage();
             updateTimerMessage.Method = "updateDvrEntry";
@@ -656,35 +525,13 @@ namespace TVHeadEnd
             updateTimerMessage.putField("startExtra", (long)(info.PrePaddingSeconds / 60));
             updateTimerMessage.putField("stopExtra", (long)(info.PostPaddingSeconds / 60));
 
-            TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Factory.StartNew(() =>
-            {
-                LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
-                _htsConnectionHandler.SendMessage(updateTimerMessage, lbrh);
-                _lastRecordingChange = DateTime.UtcNow;
-                return lbrh.getResponse();
-            }));
+            HtspResult result = await SendAsync(updateTimerMessage, cancellationToken);
 
-            if (twtRes.HasTimeout)
-            {
-                _logger.LogError("LiveTvService.UpdateTimerAsync: can't update timer because the timeout was reached");
-            }
-            else
-            {
-                HTSMessage updateTimerResponse = twtRes.Result;
-                Boolean success = updateTimerResponse.getInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (updateTimerResponse.containsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.UpdateTimerAsync: can't update timer: '{why}'", updateTimerResponse.getString("error"));
-                    }
-                    else if (updateTimerResponse.containsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.UpdateTimerAsync: can't update timer: '{why}'", updateTimerResponse.getString("noaccess"));
-                    }
-                }
-            }
+            // Updating an entry that no longer exists cannot succeed, so a missing one is a
+            // genuine failure here, unlike for the removals.
+            ThrowOnFailure(result, operation, missingIsSuccess: false);
+
+            _lastRecordingChange = DateTime.UtcNow;
         }
 
         /***********/
@@ -696,30 +543,92 @@ namespace TVHeadEnd
             return Task.Factory.StartNew(() => _htsConnectionHandler.WaitForInitialLoad(cancellationToken), cancellationToken);
         }
 
-        private static bool Succeeded(HTSMessage response)
+        /// <summary>
+        /// Refuses to go on unless TVHeadend has finished its initial load. Cancellation has to
+        /// throw rather than return: returning normally reads as success to Jellyfin, which would
+        /// then act on a change that never reached TVHeadend.
+        /// </summary>
+        private async Task EnsureConnectionReady(string operation, CancellationToken cancellationToken)
         {
-            return response.getInt("success", 0) == 1;
+            if (-1 == await WaitForInitialLoadTask(cancellationToken))
+            {
+                throw new TimeoutException($"{operation}: TVHeadend connection not ready");
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         /// <summary>
-        /// HTSP reports why an operation failed in one of two fields and offers no error codes,
-        /// so the reason is only ever a human readable string.
+        /// Performs one HTSP request/response round trip and classifies the outcome.
         /// </summary>
-        private static string GetFailureReason(HTSMessage response)
+        private async Task<HtspResult> SendAsync(HTSMessage message, CancellationToken cancellationToken)
         {
-            return
+            TaskWithTimeoutRunner<HTSMessage> runner = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
+            TaskWithTimeoutResult<HTSMessage> outcome = await runner.RunWithTimeout(Task.Factory.StartNew(() =>
+            {
+                LoopBackResponseHandler handler = new LoopBackResponseHandler();
+                _htsConnectionHandler.SendMessage(message, handler);
+                return handler.getResponse();
+            }, cancellationToken));
+
+            if (outcome.HasTimeout)
+            {
+                return new HtspResult.TimedOut(_timeout);
+            }
+
+            HTSMessage response = outcome.Result;
+
+            if (response.getInt("success", 0) == 1)
+            {
+                return new HtspResult.Ok(response);
+            }
+
+            // HTSP has no error codes, it reports the reason in one of two fields as free text.
+            string reason =
                 response.containsField("error") ? response.getString("error") :
                 response.containsField("noaccess") ? response.getString("noaccess") :
                 "unknown error";
+
+            return reason.Contains("not found", StringComparison.OrdinalIgnoreCase)
+                ? new HtspResult.NotFound()
+                : new HtspResult.Failed(reason);
         }
 
         /// <summary>
-        /// Removing an entry that no longer exists has reached the desired end state and must not
-        /// be reported as a failure, otherwise Jellyfin keeps an entry it can never get rid of.
+        /// Translates a result into the exception contract Jellyfin expects. This is the single
+        /// place where the internal result type meets the outside world.
         /// </summary>
-        private static bool IsAlreadyGone(string reason)
+        /// <param name="result">The outcome to translate.</param>
+        /// <param name="operation">Operation description used in the exception message.</param>
+        /// <param name="missingIsSuccess">
+        /// Whether a missing entry counts as success. True for removals, where an entry that is
+        /// already gone is the desired end state — reporting it as a failure would leave Jellyfin
+        /// with an item it can never get rid of. False for anything that creates or changes an
+        /// entry, where a missing target really is a failure.
+        /// </param>
+        private void ThrowOnFailure(HtspResult result, string operation, bool missingIsSuccess)
         {
-            return reason.Contains("not found", StringComparison.OrdinalIgnoreCase);
+            switch (result)
+            {
+                case HtspResult.Ok:
+                    return;
+
+                case HtspResult.NotFound when missingIsSuccess:
+                    _logger.LogInformation("{Operation}: entry already gone, treating as success", operation);
+                    return;
+
+                case HtspResult.NotFound:
+                    throw new InvalidOperationException($"{operation} failed: entry not found");
+
+                case HtspResult.TimedOut timedOut:
+                    throw new TimeoutException($"{operation}: timeout after {timedOut.After}");
+
+                case HtspResult.Failed failed:
+                    throw new InvalidOperationException($"{operation} failed: '{failed.Reason}'");
+
+                default:
+                    throw new InvalidOperationException($"{operation} failed: unhandled result {result}");
+            }
         }
 
         private static string Dump(List<DayOfWeek> days)
@@ -738,4 +647,26 @@ namespace TVHeadEnd
         }
     }
 
+    /// <summary>
+    /// Outcome of an HTSP round trip. The private constructor closes the hierarchy, so the cases
+    /// nested below are the only ones that can exist.
+    /// </summary>
+    public abstract record HtspResult
+    {
+        private HtspResult()
+        {
+        }
+
+        /// <summary>The server acknowledged the request.</summary>
+        public sealed record Ok(HTSMessage Response) : HtspResult;
+
+        /// <summary>The entry the request referred to does not exist on the server.</summary>
+        public sealed record NotFound : HtspResult;
+
+        /// <summary>The server refused the request and gave a reason.</summary>
+        public sealed record Failed(string Reason) : HtspResult;
+
+        /// <summary>No response arrived in time.</summary>
+        public sealed record TimedOut(TimeSpan After) : HtspResult;
+    }
 }
