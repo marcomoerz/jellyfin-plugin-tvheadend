@@ -22,7 +22,7 @@ using TVHeadEnd.TimeoutHelper;
 
 namespace TVHeadEnd
 {
-    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes
+    public class RecordingsChannel : IChannel, ISupportsDelete, ISupportsLatestMedia, IHasFolderAttributes, IHasCacheKey
     {
         private HTSConnectionHandler _htsConnectionHandler;
         private readonly TimeSpan TIMEOUT = TimeSpan.FromMinutes(5);
