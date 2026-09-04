@@ -9,11 +9,11 @@
     "versions":  [
                      {
                          "version":  "14.0.0.0",
-                         "changelog":  "Idempotent recording deletion, recording indicator in live TV, async connection layer, HTSP integer encoding fix",
+                         "changelog":  "",
                          "targetAbi":  "10.11.0.0",
                          "sourceUrl":  "https://github.com/marcomoerz/jellyfin-plugin-tvheadend/releases/download/v14.0.0.0/tvheadend_14.0.0.0.zip",
-                         "checksum":  "d772a85b78d0aeaf957d7c0458e6357b",
-                         "timestamp":  "2026-09-04T21:39:07Z"
+                         "checksum":  "e39c5a76684aea976f938a47957a0b62",
+                         "timestamp":  "2026-09-04T21:50:19Z"
                      }
                  ]
 }]
