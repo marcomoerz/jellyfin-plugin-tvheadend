@@ -401,8 +401,11 @@ namespace TVHeadEnd.DataHelper
                                     case "scheduled":
                                         ti.Status = RecordingStatus.New;
                                         break;
+                                    case "recording":
+                                        ti.Status = RecordingStatus.InProgress;
+                                        break;
                                     default:
-                                        // only scheduled timers need to be delivered
+                                        // completed and missed entries are recordings, not timers
                                         continue;
                                 }
                             }
