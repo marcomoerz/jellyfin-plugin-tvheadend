@@ -92,7 +92,8 @@ namespace TVHeadEnd
 
             values.Add(Math.Floor(minute).ToString(CultureInfo.InvariantCulture));
 
-            values.Add(GetService()._lastRecordingChange.Ticks.ToString(CultureInfo.InvariantCulture));
+            var lastRecordingChange = GetService()?._lastRecordingChange ?? DateTime.MinValue;
+            values.Add(lastRecordingChange.Ticks.ToString(CultureInfo.InvariantCulture));
 
             return string.Join("-", values.ToArray());
         }
@@ -260,8 +261,6 @@ namespace TVHeadEnd
 
         private ChannelItemInfo ConvertToChannelItem(MyRecordingInfo item)
         {
-            var path = buildRecordingPath(item.Id);
-
             _logger.LogDebug("[TVHclient] ConvertToChannelItem - Creating ChannelItemInfo");
 
             var channelItem = new ChannelItemInfo
@@ -280,9 +279,9 @@ namespace TVHeadEnd
                 {
                     new MediaSourceInfo
                     {
-                        Path = path,
-                        Protocol = path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? MediaProtocol.Http : MediaProtocol.File,
-                        Id = item.Id,
+                        Path = _htsConnectionHandler.GetHttpBaseUrlWithCredentials() + "/dvrfile/" + item.Id,
+                        Protocol = MediaProtocol.Http,
+                        Id = item.Id.GetMD5().ToString("N"),
                         Container = "mpegts",
                         AnalyzeDurationMs = 2000,
                         MediaStreams = new List<MediaStream>
@@ -320,30 +319,6 @@ namespace TVHeadEnd
             };
 
             return channelItem;
-        }
-
-        private static string buildRecordingPath(string Id)
-        {
-            var config = Plugin.Instance.Configuration;
-            try
-            {
-                var tvhServerName = config.TVH_ServerName.Trim();
-                var httpPort = config.HTTP_Port;
-                var htspPort = config.HTSP_Port;
-                var webRoot = config.WebRoot;            
-                if (webRoot.EndsWith("/"))
-                {
-                    webRoot = webRoot.Substring(0, webRoot.Length - 1);
-                }
-                var userName = config.Username.Trim();
-                var password = config.Password.Trim();
-                return "http://" + userName + ":" + password + "@" + tvhServerName + ":" + httpPort + webRoot + "/dvrfile/" + Id;
-            }
-            catch (Exception)
-            {
-
-            }
-            return "";
         }
 
         private async Task<ChannelItemResult> GetRecordingGroups(InternalChannelItemQuery query, CancellationToken cancellationToken)
