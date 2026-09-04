@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Controller.LiveTv;
+using MediaBrowser.Model.Plugins;
 using Microsoft.Extensions.Logging;
 using Microsoft.Net.Http.Headers;
 using TVHeadEnd.DataHelper;
@@ -33,6 +34,7 @@ namespace TVHeadEnd
         private volatile Boolean _initialLoadFinished = false;
         private volatile Boolean _connected = false;
         private volatile Boolean _configured = false;
+        private volatile Boolean _configurationChangeHooked = false;
 
         private HTSConnectionAsync _htsConnection;
         private int _priority;
@@ -186,6 +188,19 @@ namespace TVHeadEnd
             authInfo = Convert.ToBase64String(Encoding.Default.GetBytes(authInfo));
             _headers["Authorization"] = "Basic " + authInfo;
             _configured = true;
+
+            if (!_configurationChangeHooked)
+            {
+                Plugin.Instance.ConfigurationChanged += OnPluginConfigurationChanged;
+                _configurationChangeHooked = true;
+            }
+        }
+
+        private void OnPluginConfigurationChanged(object sender, BasePluginConfiguration e)
+        {
+            _logger.LogInformation(
+                "[TVHclient] HTSConnectionHandler: plugin configuration changed, re-reading it on next use");
+            _configured = false;
         }
 
         public string GetChannelImageUrl(string channelId)
