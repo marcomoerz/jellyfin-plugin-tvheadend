@@ -39,7 +39,6 @@ namespace TVHeadEnd
         private HTSConnectionAsync _htsConnection;
         private int _priority;
         private string _profile;
-        private string _httpBaseUrl;
         private string _channelType;
         private string _tvhServerName;
         private int _httpPort;
@@ -105,7 +104,7 @@ namespace TVHeadEnd
         {
             ensureConnection();
             DateTime start = DateTime.Now;
-            while (!_initialLoadFinished || cancellationToken.IsCancellationRequested)
+            while (!_initialLoadFinished && !cancellationToken.IsCancellationRequested)
             {
                 Thread.Sleep(500);
                 TimeSpan duration = DateTime.Now - start;
@@ -174,16 +173,6 @@ namespace TVHeadEnd
             _userName = config.Username.Trim();
             _password = config.Password.Trim();
 
-            if (_enableSubsMaudios)
-            {
-                // Use HTTP basic auth instead of TVH ticketing system for authentication to allow the users to switch subs or audio tracks at any time
-                _httpBaseUrl = "http://" + _userName + ":" + _password + "@" + _tvhServerName + ":" + _httpPort + _webRoot;
-            }
-            else
-            {
-                _httpBaseUrl = "http://" + _tvhServerName + ":" + _httpPort + _webRoot;
-            }
-
             string authInfo = _userName + ":" + _password;
             authInfo = Convert.ToBase64String(Encoding.Default.GetBytes(authInfo));
             _headers["Authorization"] = "Basic " + authInfo;
@@ -228,6 +217,7 @@ namespace TVHeadEnd
 
         public Dictionary<string, string> GetHeaders()
         {
+            init();
             return new Dictionary<string, string>(_headers);
         }
 
@@ -316,10 +306,16 @@ namespace TVHeadEnd
             return _profile;
         }
 
-        public String GetHttpBaseUrl()
+        public String GetHttpBaseUrlWithCredentials()
         {
             init();
-            return _httpBaseUrl;
+            return "http://" + _userName + ":" + _password + "@" + _tvhServerName + ":" + _httpPort + _webRoot;
+        }
+
+        public String GetHttpBaseUrlWithoutCredentials()
+        {
+            init();
+            return "http://" + _tvhServerName + ":" + _httpPort + _webRoot;
         }
 
         public bool GetEnableSubsMaudios()
