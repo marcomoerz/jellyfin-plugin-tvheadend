@@ -57,12 +57,13 @@ namespace TVHeadEnd
 
         public async Task CancelSeriesTimerAsync(string timerId, CancellationToken cancellationToken)
         {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
+            bool timeOut = -1 == await WaitForInitialLoadTask(cancellationToken);
+            if (timeOut)
             {
-                _logger.LogDebug("LiveTvService.CancelSeriesTimerAsync: call cancelled or timed out");
-                return;
+                throw new TimeoutException(
+                    $"CancelSeriesTimerAsync('{timerId}'): TVHeadend connection not ready");
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
             HTSMessage deleteAutorecMessage = new HTSMessage();
             deleteAutorecMessage.Method = "deleteAutorecEntry";
@@ -73,40 +74,46 @@ namespace TVHeadEnd
             {
                 LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
                 _htsConnectionHandler.SendMessage(deleteAutorecMessage, lbrh);
-                _lastRecordingChange = DateTime.UtcNow;
                 return lbrh.getResponse();
             }, cancellationToken));
 
             if (twtRes.HasTimeout)
             {
-                _logger.LogError("LiveTvService.CancelSeriesTimerAsync: can't delete recording because the timeout was reached");
+                throw new TimeoutException(
+                    $"CancelSeriesTimerAsync('{timerId}'): timeout after {_timeout}");
             }
-            else
+
+            HTSMessage response = twtRes.Result;
+
+            if (Succeeded(response))
             {
-                HTSMessage deleteAutorecResponse = twtRes.Result;
-                Boolean success = deleteAutorecResponse.getInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (deleteAutorecResponse.containsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.CancelSeriesTimerAsync: can't delete recording: '{why}'", deleteAutorecResponse.getString("error"));
-                    }
-                    else if (deleteAutorecResponse.containsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.CancelSeriesTimerAsync: can't delete recording: '{why}'", deleteAutorecResponse.getString("noaccess"));
-                    }
-                }
+                _lastRecordingChange = DateTime.UtcNow;
+                return;
             }
+
+            string reason = GetFailureReason(response);
+
+            if (IsAlreadyGone(reason))
+            {
+                _logger.LogInformation(
+                    "CancelSeriesTimerAsync: autorec entry '{Id}' already gone, treating as success", timerId);
+                _lastRecordingChange = DateTime.UtcNow;
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"CancelSeriesTimerAsync('{timerId}') failed: '{reason}'");
         }
 
         public async Task CancelTimerAsync(string timerId, CancellationToken cancellationToken)
         {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
+            bool timeOut = -1 == await WaitForInitialLoadTask(cancellationToken);
+            if (timeOut)
             {
-                _logger.LogDebug("LiveTvService.CancelTimerAsync: call cancelled or timed out");
-                return;
+                throw new TimeoutException(
+                    $"CancelTimerAsync('{timerId}'): TVHeadend connection not ready");
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
             HTSMessage cancelTimerMessage = new HTSMessage();
             cancelTimerMessage.Method = "cancelDvrEntry";
@@ -117,30 +124,35 @@ namespace TVHeadEnd
             {
                 LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
                 _htsConnectionHandler.SendMessage(cancelTimerMessage, lbrh);
-                _lastRecordingChange = DateTime.UtcNow;
                 return lbrh.getResponse();
             }, cancellationToken));
 
             if (twtRes.HasTimeout)
             {
-                _logger.LogError("LiveTvService.CancelTimerAsync: can't cancel timer because the timeout was reached");
+                throw new TimeoutException(
+                    $"CancelTimerAsync('{timerId}'): timeout after {_timeout}");
             }
-            else
+
+            HTSMessage response = twtRes.Result;
+
+            if (Succeeded(response))
             {
-                HTSMessage cancelTimerResponse = twtRes.Result;
-                Boolean success = cancelTimerResponse.getInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (cancelTimerResponse.containsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.CancelTimerAsync: can't cancel timer: '{why}'", cancelTimerResponse.getString("error"));
-                    }
-                    else if (cancelTimerResponse.containsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.CancelTimerAsync: can't cancel timer: '{why}'", cancelTimerResponse.getString("noaccess"));
-                    }
-                }
+                _lastRecordingChange = DateTime.UtcNow;
+                return;
             }
+
+            string reason = GetFailureReason(response);
+
+            if (IsAlreadyGone(reason))
+            {
+                _logger.LogInformation(
+                    "CancelTimerAsync: DVR entry '{Id}' already gone, treating as success", timerId);
+                _lastRecordingChange = DateTime.UtcNow;
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"CancelTimerAsync('{timerId}') failed: '{reason}'");
         }
 
         public async Task CloseLiveStream(string subscriptionId, CancellationToken cancellationToken)
@@ -162,12 +174,13 @@ namespace TVHeadEnd
 
         public async Task CreateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
         {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
+            bool timeOut = -1 == await WaitForInitialLoadTask(cancellationToken);
+            if (timeOut)
             {
-                _logger.LogDebug("LiveTvService.CreateTimerAsync: call cancelled or timed out");
-                return;
+                throw new TimeoutException(
+                    $"CreateTimerAsync('{info.Name}'): TVHeadend connection not ready");
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
             HTSMessage createTimerMessage = new HTSMessage();
             createTimerMessage.Method = "addDvrEntry";
@@ -182,6 +195,19 @@ namespace TVHeadEnd
             createTimerMessage.putField("title", info.Name);
             createTimerMessage.putField("creator", Plugin.Instance.Configuration.Username);
 
+            if (!string.IsNullOrEmpty(info.ProgramId)
+                && int.TryParse(info.ProgramId, out int eventId)
+                && eventId > 0)
+            {
+                createTimerMessage.putField("eventId", eventId);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "LiveTvService.CreateTimerAsync: no usable EPG event id in ProgramId '{ProgramId}', "
+                    + "falling back to a time based recording", info.ProgramId);
+            }
+
             TaskWithTimeoutRunner<HTSMessage> twtr = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
             TaskWithTimeoutResult<HTSMessage> twtRes = await twtr.RunWithTimeout(Task.Factory.StartNew(() =>
             {
@@ -192,34 +218,33 @@ namespace TVHeadEnd
 
             if (twtRes.HasTimeout)
             {
-                _logger.LogError("LiveTvService.CreateTimerAsync: can't create timer because the timeout was reached");
+                throw new TimeoutException(
+                    $"CreateTimerAsync('{info.Name}'): timeout after {_timeout}");
             }
-            else
+
+            HTSMessage response = twtRes.Result;
+
+            if (Succeeded(response))
             {
-                HTSMessage createTimerResponse = twtRes.Result;
-                Boolean success = createTimerResponse.getInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (createTimerResponse.containsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.CreateTimerAsync: can't create timer: '{why}'", createTimerResponse.getString("error"));
-                    }
-                    else if (createTimerResponse.containsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.CreateTimerAsync: can't create timer: '{why}'", createTimerResponse.getString("noaccess"));
-                    }
-                }
+                _lastRecordingChange = DateTime.UtcNow;
+                return;
             }
+
+            // Returning normally would tell Jellyfin the timer exists, and the user would be left
+            // waiting for a recording that was never scheduled.
+            throw new InvalidOperationException(
+                $"CreateTimerAsync('{info.Name}') failed: '{GetFailureReason(response)}'");
         }
 
         public async Task DeleteRecordingAsync(string recordingId, CancellationToken cancellationToken)
         {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
+            bool timeOut = -1 == await WaitForInitialLoadTask(cancellationToken);
+            if (timeOut)
             {
-                _logger.LogError("LiveTvService.DeleteRecordingAsync: call cancelled or timed out");
-                return;
+                throw new TimeoutException(
+                    $"DeleteRecordingAsync('{recordingId}'): TVHeadend connection not ready");
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
             HTSMessage deleteRecordingMessage = new HTSMessage();
             deleteRecordingMessage.Method = "deleteDvrEntry";
@@ -230,30 +255,36 @@ namespace TVHeadEnd
             {
                 LoopBackResponseHandler lbrh = new LoopBackResponseHandler();
                 _htsConnectionHandler.SendMessage(deleteRecordingMessage, lbrh);
-                _lastRecordingChange = DateTime.UtcNow;
                 return lbrh.getResponse();
             }, cancellationToken));
 
             if (twtRes.HasTimeout)
             {
-                _logger.LogError("LiveTvService.DeleteRecordingAsync: can't delete recording because the timeout was reached");
+                throw new TimeoutException(
+                    $"DeleteRecordingAsync('{recordingId}'): timeout after {_timeout}");
             }
-            else
+
+            HTSMessage response = twtRes.Result;
+
+            if (Succeeded(response))
             {
-                HTSMessage deleteRecordingResponse = twtRes.Result;
-                Boolean success = deleteRecordingResponse.getInt("success", 0) == 1;
-                if (!success)
-                {
-                    if (deleteRecordingResponse.containsField("error"))
-                    {
-                        _logger.LogError("LiveTvService.DeleteRecordingAsync: can't delete recording: '{why}'", deleteRecordingResponse.getString("error"));
-                    }
-                    else if (deleteRecordingResponse.containsField("noaccess"))
-                    {
-                        _logger.LogError("LiveTvService.DeleteRecordingAsync: can't delete recording: '{why}'", deleteRecordingResponse.getString("noaccess"));
-                    }
-                }
+                _lastRecordingChange = DateTime.UtcNow;
+                return;
             }
+
+            string reason = GetFailureReason(response);
+
+            if (IsAlreadyGone(reason))
+            {
+                // Entry removed in tvheadend
+                _logger.LogInformation(
+                    "DeleteRecordingAsync: DVR entry '{Id}' already gone, treating as success", recordingId);
+                _lastRecordingChange = DateTime.UtcNow;
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"DeleteRecordingAsync('{recordingId}') failed: '{reason}'");
         }
 
         public async Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken cancellationToken)
@@ -299,10 +330,8 @@ namespace TVHeadEnd
 
                 livetvasset.Id = channelId;
 
-                // Use HTTP basic auth in HTTP header instead of TVH ticketing system for authentication to allow the users to switch subs or audio tracks at any time
-                livetvasset.Path = _htsConnectionHandler.GetHttpBaseUrl() + ticket.Path;
+                livetvasset.Path = _htsConnectionHandler.GetHttpBaseUrlWithCredentials() + ticket.Path;
                 livetvasset.Protocol = MediaProtocol.Http;
-                livetvasset.RequiredHttpHeaders = _htsConnectionHandler.GetHeaders();
                 livetvasset.AnalyzeDurationMs = 2000;
                 livetvasset.SupportsDirectStream = false;
                 livetvasset.RequiresClosing = true;
@@ -338,7 +367,7 @@ namespace TVHeadEnd
                 return new MediaSourceInfo
                 {
                     Id = channelId,
-                    Path = _htsConnectionHandler.GetHttpBaseUrl() + ticket.Url,
+                    Path = _htsConnectionHandler.GetHttpBaseUrlWithoutCredentials() + ticket.Url,
                     Protocol = MediaProtocol.Http,
                     AnalyzeDurationMs = 2000,
                     SupportsDirectStream = false,
@@ -665,6 +694,32 @@ namespace TVHeadEnd
         private Task<int> WaitForInitialLoadTask(CancellationToken cancellationToken)
         {
             return Task.Factory.StartNew(() => _htsConnectionHandler.WaitForInitialLoad(cancellationToken), cancellationToken);
+        }
+
+        private static bool Succeeded(HTSMessage response)
+        {
+            return response.getInt("success", 0) == 1;
+        }
+
+        /// <summary>
+        /// HTSP reports why an operation failed in one of two fields and offers no error codes,
+        /// so the reason is only ever a human readable string.
+        /// </summary>
+        private static string GetFailureReason(HTSMessage response)
+        {
+            return
+                response.containsField("error") ? response.getString("error") :
+                response.containsField("noaccess") ? response.getString("noaccess") :
+                "unknown error";
+        }
+
+        /// <summary>
+        /// Removing an entry that no longer exists has reached the desired end state and must not
+        /// be reported as a failure, otherwise Jellyfin keeps an entry it can never get rid of.
+        /// </summary>
+        private static bool IsAlreadyGone(string reason)
+        {
+            return reason.Contains("not found", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string Dump(List<DayOfWeek> days)
