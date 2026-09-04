@@ -1,0 +1,19 @@
+[{
+    "guid":  "3fd018e5-5e78-4e58-b280-a0c068febee0",
+    "name":  "TVHeadend",
+    "description":  "Provides live TV using TVHeadend as the source.",
+    "overview":  "Manage TVHeadend from Jellyfin",
+    "owner":  "marcomoerz",
+    "category":  "LiveTV",
+    "imageUrl":  "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png",
+    "versions":  [
+                     {
+                         "version":  "14.0.0.0",
+                         "changelog":  "Idempotent recording deletion, recording indicator in live TV, async connection layer, HTSP integer encoding fix",
+                         "targetAbi":  "10.11.0.0",
+                         "sourceUrl":  "https://github.com/marcomoerz/jellyfin-plugin-tvheadend/releases/download/v14.0.0.0/tvheadend_14.0.0.0.zip",
+                         "checksum":  "d772a85b78d0aeaf957d7c0458e6357b",
+                         "timestamp":  "2026-09-04T21:39:07Z"
+                     }
+                 ]
+}]
