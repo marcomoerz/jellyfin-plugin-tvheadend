@@ -14,7 +14,6 @@ using Microsoft.Extensions.Logging;
 using TVHeadEnd.Helper;
 using TVHeadEnd.HTSP;
 using TVHeadEnd.HTSP_Responses;
-using TVHeadEnd.TimeoutHelper;
 using static TVHeadEnd.AccessTicketHandler.TicketType;
 
 namespace TVHeadEnd
@@ -162,23 +161,25 @@ namespace TVHeadEnd
 
         public async Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken cancellationToken)
         {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
+            bool loaded = await WaitForInitialLoadTask(cancellationToken);
+            if (!loaded || cancellationToken.IsCancellationRequested)
             {
                 _logger.LogError("LiveTvService.GetChannelsAsync: call cancelled or timed out - returning empty list");
                 return new List<ChannelInfo>();
             }
 
-            TaskWithTimeoutRunner<IEnumerable<ChannelInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<ChannelInfo>>(_timeout);
-            TaskWithTimeoutResult<IEnumerable<ChannelInfo>> twtRes = await
-                twtr.RunWithTimeout(_htsConnectionHandler.BuildChannelInfos(cancellationToken));
-
-            if (twtRes.HasTimeout)
+            List<ChannelInfo> list;
+            try
             {
+                list = (await _htsConnectionHandler.BuildChannelInfos(cancellationToken)
+                    .WaitAsync(_timeout, cancellationToken)
+                    .ConfigureAwait(false)).ToList();
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogError("LiveTvService.GetChannelsAsync: timed out - returning empty list");
                 return new List<ChannelInfo>();
             }
-
-            var list = twtRes.Result.ToList();
 
             foreach (var channel in list)
             {
@@ -428,78 +429,80 @@ namespace TVHeadEnd
 
         public async Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime startDateUtc, DateTime endDateUtc, CancellationToken cancellationToken)
         {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
+            bool loaded = await WaitForInitialLoadTask(cancellationToken);
+            if (!loaded || cancellationToken.IsCancellationRequested)
             {
                 _logger.LogDebug("LiveTvService.GetProgramsAsync: call cancelled or timed out - returning empty list");
                 return new List<ProgramInfo>();
             }
 
-            GetEventsResponseHandler currGetEventsResponseHandler = new GetEventsResponseHandler(startDateUtc, endDateUtc, _logger, cancellationToken);
-
             HTSMessage queryEvents = new HTSMessage();
             queryEvents.Method = "getEvents";
             queryEvents.putField("channelId", Convert.ToInt32(channelId));
             queryEvents.putField("maxTime", ((DateTimeOffset)endDateUtc).ToUnixTimeSeconds());
-            _htsConnectionHandler.SendMessage(queryEvents, currGetEventsResponseHandler);
 
             _logger.LogDebug("LiveTvService.GetProgramsAsync: ask TVH for events of channel '{chanid}'", channelId);
 
-            TaskWithTimeoutRunner<IEnumerable<ProgramInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<ProgramInfo>>(_timeout);
-            TaskWithTimeoutResult<IEnumerable<ProgramInfo>> twtRes = await
-                twtr.RunWithTimeout(currGetEventsResponseHandler.GetEvents(cancellationToken, channelId));
-
-            if (twtRes.HasTimeout)
+            HTSMessage response;
+            try
+            {
+                response = await _htsConnectionHandler
+                    .SendRequestAsync(queryEvents, _timeout, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
             {
                 _logger.LogDebug("LiveTvService.GetProgramsAsync: timeout reached while calling for events of channel '{chanid}'", channelId);
                 return new List<ProgramInfo>();
             }
 
-            return twtRes.Result;
+            return new GetEventsResponseHandler(startDateUtc, endDateUtc, _logger, cancellationToken).Parse(response);
         }
 
         public async Task<IEnumerable<SeriesTimerInfo>> GetSeriesTimersAsync(CancellationToken cancellationToken)
         {
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
+            bool loaded = await WaitForInitialLoadTask(cancellationToken);
+            if (!loaded || cancellationToken.IsCancellationRequested)
             {
                 _logger.LogDebug("LiveTvService.GetSeriesTimersAsync: call cancelled ot timed out - returning empty list");
                 return new List<SeriesTimerInfo>();
             }
 
-            TaskWithTimeoutRunner<IEnumerable<SeriesTimerInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<SeriesTimerInfo>>(_timeout);
-            TaskWithTimeoutResult<IEnumerable<SeriesTimerInfo>> twtRes = await
-                twtr.RunWithTimeout(_htsConnectionHandler.BuildAutorecInfos(cancellationToken));
-
-            if (twtRes.HasTimeout)
+            try
             {
+                return await _htsConnectionHandler.BuildAutorecInfos(cancellationToken)
+                    .WaitAsync(_timeout, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogError("LiveTvService.GetSeriesTimersAsync: timed out - returning empty list");
                 return new List<SeriesTimerInfo>();
             }
-
-            return twtRes.Result;
         }
 
         public async Task<IEnumerable<TimerInfo>> GetTimersAsync(CancellationToken cancellationToken)
         {
             //  retrieve the 'Pending' recordings");
 
-            int timeOut = await WaitForInitialLoadTask(cancellationToken);
-            if (timeOut == -1 || cancellationToken.IsCancellationRequested)
+            bool loaded = await WaitForInitialLoadTask(cancellationToken);
+            if (!loaded || cancellationToken.IsCancellationRequested)
             {
                 _logger.LogDebug("LiveTvService.GetTimersAsync: call cancelled or timed out - returning empty list");
                 return new List<TimerInfo>();
             }
 
-            TaskWithTimeoutRunner<IEnumerable<TimerInfo>> twtr = new TaskWithTimeoutRunner<IEnumerable<TimerInfo>>(_timeout);
-            TaskWithTimeoutResult<IEnumerable<TimerInfo>> twtRes = await
-                twtr.RunWithTimeout(_htsConnectionHandler.BuildPendingTimersInfos(cancellationToken));
-
-            if (twtRes.HasTimeout)
+            try
             {
+                return await _htsConnectionHandler.BuildPendingTimersInfos(cancellationToken)
+                    .WaitAsync(_timeout, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogError("LiveTvService.GetTimersAsync: timed out - returning empty list");
                 return new List<TimerInfo>();
             }
-
-            return twtRes.Result;
         }
         public Task ResetTuner(string id, CancellationToken cancellationToken)
         {
@@ -538,9 +541,9 @@ namespace TVHeadEnd
         /* Helpers */
         /***********/
 
-        private Task<int> WaitForInitialLoadTask(CancellationToken cancellationToken)
+        private Task<bool> WaitForInitialLoadTask(CancellationToken cancellationToken)
         {
-            return Task.Factory.StartNew(() => _htsConnectionHandler.WaitForInitialLoad(cancellationToken), cancellationToken);
+            return _htsConnectionHandler.WaitForInitialLoadAsync(cancellationToken);
         }
 
         /// <summary>
@@ -550,7 +553,7 @@ namespace TVHeadEnd
         /// </summary>
         private async Task EnsureConnectionReady(string operation, CancellationToken cancellationToken)
         {
-            if (-1 == await WaitForInitialLoadTask(cancellationToken))
+            if (!await WaitForInitialLoadTask(cancellationToken))
             {
                 throw new TimeoutException($"{operation}: TVHeadend connection not ready");
             }
@@ -563,20 +566,17 @@ namespace TVHeadEnd
         /// </summary>
         private async Task<HtspResult> SendAsync(HTSMessage message, CancellationToken cancellationToken)
         {
-            TaskWithTimeoutRunner<HTSMessage> runner = new TaskWithTimeoutRunner<HTSMessage>(_timeout);
-            TaskWithTimeoutResult<HTSMessage> outcome = await runner.RunWithTimeout(Task.Factory.StartNew(() =>
+            HTSMessage response;
+            try
             {
-                LoopBackResponseHandler handler = new LoopBackResponseHandler();
-                _htsConnectionHandler.SendMessage(message, handler);
-                return handler.getResponse();
-            }, cancellationToken));
-
-            if (outcome.HasTimeout)
+                response = await _htsConnectionHandler
+                    .SendRequestAsync(message, _timeout, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
             {
                 return new HtspResult.TimedOut(_timeout);
             }
-
-            HTSMessage response = outcome.Result;
 
             if (response.getInt("success", 0) == 1)
             {

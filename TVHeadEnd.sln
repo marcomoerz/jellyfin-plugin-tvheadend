@@ -5,6 +5,8 @@ VisualStudioVersion = 15.0.26730.3
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TVHeadEnd", "TVHeadEnd\TVHeadEnd.csproj", "{71407B8C-5BEC-4FD2-8657-8454B39D033E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TVHeadEnd.Tests", "TVHeadEnd.Tests\TVHeadEnd.Tests.csproj", "{0B84EF53-BC65-40AA-BDD3-2997399593CB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,6 +29,18 @@ Global
 		{71407B8C-5BEC-4FD2-8657-8454B39D033E}.Release|x64.Build.0 = Release|Any CPU
 		{71407B8C-5BEC-4FD2-8657-8454B39D033E}.Release|x86.ActiveCfg = Release|Any CPU
 		{71407B8C-5BEC-4FD2-8657-8454B39D033E}.Release|x86.Build.0 = Release|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Debug|x64.Build.0 = Debug|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Debug|x86.Build.0 = Debug|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Release|x64.ActiveCfg = Release|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Release|x64.Build.0 = Release|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Release|x86.ActiveCfg = Release|Any CPU
+		{0B84EF53-BC65-40AA-BDD3-2997399593CB}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

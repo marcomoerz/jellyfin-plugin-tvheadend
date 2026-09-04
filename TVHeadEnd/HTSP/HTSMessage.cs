@@ -365,22 +365,29 @@ namespace TVHeadEnd.HTSP
 
         private byte[] toByteArray(System.Numerics.BigInteger big)
         {
-            byte[] b = BitConverter.GetBytes((long)big);
-            byte[] b1 = new byte[0];
-            Boolean tail = false;
-            for (int ii = 0; ii < b.Length; ii++)
+            long value = (long)big;
+            byte[] b = BitConverter.GetBytes(value);
+
+            // The decoder zero-pads back to eight bytes and reads a signed 64 bit value, so a
+            // negative number has to travel complete: dropping its high 0xFF bytes would turn it
+            // into a large positive one.
+            if (value < 0)
             {
-                if (b[ii] != 0 || !tail)
-                {
-                    tail = true;
-                    b1 = b1.Concat(new byte[] { b[ii] }).ToArray();
-                }
+                return b;
             }
-            if (b1.Length == 0)
+
+            // Little endian, so the trailing bytes are the value's leading zeros and can be cut.
+            // Only those: an earlier version dropped every zero byte it met, which silently
+            // rewrote any value with a zero in the middle (65537 went out as 257).
+            int length = b.Length;
+            while (length > 1 && b[length - 1] == 0)
             {
-                b1 = new byte[1];
+                length--;
             }
-            return b1;
+
+            byte[] trimmed = new byte[length];
+            Array.Copy(b, trimmed, length);
+            return trimmed;
         }
 
         public static HTSMessage parse(byte[] data, ILogger<HTSMessage> logger)

@@ -25,18 +25,28 @@ namespace TVHeadEnd
         private static volatile HTSConnectionHandler _instance;
         private static object _syncRoot = new Object();
 
-        private readonly object _lock = new Object();
+        /// <summary>Serialises connection setup so a burst of callers builds exactly one connection.</summary>
+        private readonly SemaphoreSlim _connectionGate = new SemaphoreSlim(1, 1);
+
+        private readonly TimeSpan _requestTimeout = TimeSpan.FromMinutes(1);
+        private readonly TimeSpan _initialLoadTimeout = TimeSpan.FromMinutes(15);
 
         private readonly ILoggerFactory _loggerFactory;
         private readonly ILogger<HTSConnectionHandler> _logger;
         private readonly IHttpClientFactory _httpClientFactory;
 
-        private volatile Boolean _initialLoadFinished = false;
-        private volatile Boolean _connected = false;
+        /// <summary>
+        /// Completed once TVHeadend has finished its initial sync. Replaced by a fresh instance on
+        /// every reconnect, because a new connection has sent us nothing yet.
+        /// </summary>
+        private volatile TaskCompletionSource _initialLoadCompleted =
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private volatile Boolean _configured = false;
         private volatile Boolean _configurationChangeHooked = false;
 
-        private HTSConnectionAsync _htsConnection;
+        /// <summary>Volatile: read on the fast path outside <see cref="_connectionGate"/>.</summary>
+        private volatile HTSConnectionAsync _htsConnection;
         private int _priority;
         private string _profile;
         private string _channelType;
@@ -100,21 +110,30 @@ namespace TVHeadEnd
             return _liveTvService;
         }
 
-        public int WaitForInitialLoad(CancellationToken cancellationToken)
+        /// <summary>
+        /// Waits until TVHeadend has delivered its initial metadata sync.
+        /// </summary>
+        /// <returns><c>true</c> when the data is ready, <c>false</c> when the wait timed out.</returns>
+        public async Task<bool> WaitForInitialLoadAsync(CancellationToken cancellationToken)
         {
-            ensureConnection();
-            DateTime start = DateTime.Now;
-            while (!_initialLoadFinished && !cancellationToken.IsCancellationRequested)
+            await GetConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            // Read the field once: a reconnect swaps it, and the timeout should apply to the sync
+            // we actually asked for.
+            Task completed = _initialLoadCompleted.Task;
+
+            try
             {
-                Thread.Sleep(500);
-                TimeSpan duration = DateTime.Now - start;
-                long durationInSec = duration.Ticks / TimeSpan.TicksPerSecond;
-                if (durationInSec > 60 * 15) // 15 Min timeout, should be enough to load huge data count
-                {
-                    return -1;
-                }
+                await completed.WaitAsync(_initialLoadTimeout, cancellationToken).ConfigureAwait(false);
+                return true;
             }
-            return 0;
+            catch (TimeoutException)
+            {
+                _logger.LogError(
+                    "[TVHclient] HTSConnectionHandler: TVHeadend did not finish its initial sync within {timeout}",
+                    _initialLoadTimeout);
+                return false;
+            }
         }
 
         private void init()
@@ -229,64 +248,89 @@ namespace TVHeadEnd
         //    return stream;
         //}
 
-        private void ensureConnection()
+        /// <summary>
+        /// Returns a usable connection, building one if the current is missing or faulted.
+        /// </summary>
+        /// <remarks>
+        /// A faulted connection is never repaired, only replaced. Reconnecting is deliberately
+        /// pulled out of the failure path and into the next caller: when a socket dies, every
+        /// pump fails at once, and letting each of them reconnect is what produced connection
+        /// storms and torn-down replacements.
+        /// </remarks>
+        private async Task<HTSConnectionAsync> GetConnectionAsync(CancellationToken cancellationToken)
         {
             init();
 
-            //_logger.LogDebug("[TVHclient] HTSConnectionHandler.ensureConnection");
-            if (_htsConnection == null || _htsConnection.needsRestart())
+            HTSConnectionAsync current = _htsConnection;
+            if (current != null && !current.IsFaulted)
             {
-                _logger.LogDebug("[TVHclient] HTSConnectionHandler.ensureConnection: create new HTS connection");
-                Version version = Assembly.GetEntryAssembly().GetName().Version;
-                _htsConnection = new HTSConnectionAsync(this, "TVHclient4Emby-" + version.ToString(), "" + HTSMessage.HTSP_VERSION, _loggerFactory);
-                _connected = false;
+                return current;
             }
 
-            lock (_lock)
+            await _connectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                if (!_connected)
+                // Someone may have rebuilt it while we queued on the gate.
+                current = _htsConnection;
+                if (current != null && !current.IsFaulted)
                 {
-                    _logger.LogDebug("[TVHclient] HTSConnectionHandler.ensureConnection: used connection parameters: " +
-                        "TVH Server = '{servername}'; HTTP Port = '{httpport}'; HTSP Port = '{htspport}'; Web-Root = '{webroot}'; " +
-                        "User = '{user}'; Password set = '{passexists}'",
-                        _tvhServerName, _httpPort, _htspPort, _webRoot, _userName, (_password.Length > 0));
-
-                    _htsConnection.open(_tvhServerName, _htspPort);
-                    _connected = _htsConnection.authenticate(_userName, _password);
-
-                    _logger.LogDebug("[TVHclient] HTSConnectionHandler.ensureConnection: connection established {c}", _connected);
+                    return current;
                 }
+
+                if (current != null)
+                {
+                    _htsConnection = null;
+                    await current.DisposeAsync().ConfigureAwait(false);
+                }
+
+                // A fresh connection has told us nothing yet. Anything cached describes a server
+                // state we are no longer subscribed to.
+                _initialLoadCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _channelDataHelper.Clean();
+                _dvrDataHelper.clean();
+                _autorecDataHelper.clean();
+
+                _logger.LogDebug("[TVHclient] HTSConnectionHandler: connecting to " +
+                    "TVH Server = '{servername}'; HTTP Port = '{httpport}'; HTSP Port = '{htspport}'; Web-Root = '{webroot}'; " +
+                    "User = '{user}'; Password set = '{passexists}'",
+                    _tvhServerName, _httpPort, _htspPort, _webRoot, _userName, _password.Length > 0);
+
+                Version version = Assembly.GetEntryAssembly().GetName().Version;
+                HTSConnectionAsync connection = new HTSConnectionAsync(
+                    this, "TVHclient4Emby-" + version, "" + HTSMessage.HTSP_VERSION, _loggerFactory);
+
+                try
+                {
+                    await connection.ConnectAsync(_tvhServerName, _htspPort, cancellationToken).ConfigureAwait(false);
+
+                    if (!await connection.AuthenticateAsync(_userName, _password, _requestTimeout, cancellationToken).ConfigureAwait(false))
+                    {
+                        throw new InvalidOperationException(
+                            "TVHeadend rejected the configured credentials");
+                    }
+                }
+                catch
+                {
+                    await connection.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+
+                _htsConnection = connection;
+                _logger.LogDebug("[TVHclient] HTSConnectionHandler: connection established");
+                return connection;
+            }
+            finally
+            {
+                _connectionGate.Release();
             }
         }
 
-        public void SendMessage(HTSMessage message, HTSResponseHandler responseHandler)
+        /// <summary>Sends a request over the current connection and awaits its reply.</summary>
+        /// <exception cref="TimeoutException">No reply arrived within <paramref name="timeout"/>.</exception>
+        public async Task<HTSMessage> SendRequestAsync(HTSMessage message, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            ensureConnection();
-            _htsConnection.sendMessage(message, responseHandler);
-        }
-
-        public String GetServername()
-        {
-            ensureConnection();
-            return _htsConnection.getServername();
-        }
-
-        public String GetServerVersion()
-        {
-            ensureConnection();
-            return _htsConnection.getServerversion();
-        }
-
-        public int GetServerProtocolVersion()
-        {
-            ensureConnection();
-            return _htsConnection.getServerProtocolVersion();
-        }
-
-        public String GetDiskSpace()
-        {
-            ensureConnection();
-            return _htsConnection.getDiskspace();
+            HTSConnectionAsync connection = await GetConnectionAsync(cancellationToken).ConfigureAwait(false);
+            return await connection.SendRequestAsync(message, timeout, cancellationToken).ConfigureAwait(false);
         }
 
         public Task<IEnumerable<ChannelInfo>> BuildChannelInfos(CancellationToken cancellationToken)
@@ -345,14 +389,17 @@ namespace TVHeadEnd
             return _dvrDataHelper.buildPendingTimersInfos(cancellationToken);
         }
 
+        /// <summary>
+        /// Reports that the current connection died. Fired at most once per connection.
+        /// </summary>
+        /// <remarks>
+        /// This deliberately does not reconnect. The connection has marked itself faulted, so the
+        /// next caller that needs it rebuilds it through <see cref="GetConnectionAsync"/> — on its
+        /// own thread, under the gate, and only if anyone still cares.
+        /// </remarks>
         public void onError(Exception ex)
         {
-            _logger.LogError(ex, "[TVHclient] HTSConnectionHandler: HTSP error");
-            _htsConnection.stop();
-            _htsConnection = null;
-            _connected = false;
-            //_liveTvService.sendDataSourceChanged();
-            ensureConnection();
+            _logger.LogError(ex, "[TVHclient] HTSConnectionHandler: HTSP connection lost, reconnecting on next use");
         }
 
         public void onMessage(HTSMessage response)
@@ -424,7 +471,7 @@ namespace TVHeadEnd
                     //    break;
 
                     case "initialSyncCompleted":
-                        _initialLoadFinished = true;
+                        _initialLoadCompleted.TrySetResult();
                         break;
 
                     default:
