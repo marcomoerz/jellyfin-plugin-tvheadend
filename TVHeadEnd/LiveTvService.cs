@@ -27,6 +27,11 @@ namespace TVHeadEnd
         private readonly HTSConnectionHandler _htsConnectionHandler;
         private readonly AccessTicketHandler _channelTicketHandler;
 
+        /// <summary>
+        /// What each channel contains, so it only has to be probed once.
+        /// </summary>
+        private readonly ChannelStreamProfileCache _channelStreamProfiles = new ChannelStreamProfileCache();
+
         private readonly ILogger<LiveTvService> _logger;
         public DateTime _lastRecordingChange = DateTime.MinValue;
 
@@ -214,10 +219,7 @@ namespace TVHeadEnd
                 livetvasset.RequiresOpening = true;
                 livetvasset.IsInfiniteStream  = true;
 
-                // Probe the asset stream to determine available sub-streams
-                string livetvasset_probeUrl = "" + livetvasset.Path;
-                string livetvasset_source = "LiveTV";
-                await ProbeStream(livetvasset, livetvasset_probeUrl, livetvasset_source, cancellationToken);
+                await DescribeChannelAsync(channelId, livetvasset, cancellationToken).ConfigureAwait(false);
 
                 // If enabled, force video deinterlacing for channels
                 if (_htsConnectionHandler.GetForceDeinterlace())
@@ -238,7 +240,7 @@ namespace TVHeadEnd
             }
             else
             {
-                return new MediaSourceInfo
+                MediaSourceInfo livetvasset = new MediaSourceInfo
                 {
                     Id = channelId,
                     Path = _htsConnectionHandler.GetHttpBaseUrlWithoutCredentials() + ticket.Url,
@@ -266,6 +268,57 @@ namespace TVHeadEnd
                         }
                     }
                 };
+
+                await DescribeChannelAsync(channelId, livetvasset, cancellationToken).ConfigureAwait(false);
+
+                return livetvasset;
+            }
+        }
+
+        /// <summary>
+        /// Fills in what the channel actually contains, probing only when it is not already known.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Jellyfin decides direct play by matching each stream codec against the client profile,
+        /// so a channel described without codecs is always transcoded. Learning them means
+        /// probing, which blocks playback for as long as ffmpeg needs to read the stream.
+        /// </para>
+        /// <para>
+        /// A channel keeps its codecs for years, so the answer is remembered and the wait is paid
+        /// once rather than on every playback. A probe that fails leaves the caller with the
+        /// description it already had.
+        /// </para>
+        /// </remarks>
+        private async Task DescribeChannelAsync(
+            string channelId, MediaSourceInfo asset, CancellationToken cancellationToken)
+        {
+            ChannelStreamProfile? known = _channelStreamProfiles.Get(channelId);
+            if (null != known)
+            {
+                _logger.LogDebug(
+                    "LiveTvService: channel '{channel}' is already known, skipping the probe", channelId);
+                ChannelStreamProfileCache.ApplyTo(known, asset);
+                return;
+            }
+
+            try
+            {
+                await ProbeStream(asset, asset.Path, "LiveTV", cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // Playing with a rough description beats not playing at all.
+                _logger.LogWarning(ex,
+                    "LiveTvService: could not probe channel '{channel}', continuing without codecs", channelId);
+                return;
+            }
+
+            if (_channelStreamProfiles.Remember(channelId, asset))
+            {
+                _logger.LogDebug(
+                    "LiveTvService: remembered {count} streams for channel '{channel}'",
+                    asset.MediaStreams?.Count ?? 0, channelId);
             }
         }
 
