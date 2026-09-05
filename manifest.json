@@ -8,6 +8,14 @@
     "imageUrl":  "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png",
     "versions":  [
                      {
+                         "version":  "15.0.0.0",
+                         "changelog":  "Recordings report their codecs and bitrate, running recordings are watchable, live TV is probed once per channel",
+                         "targetAbi":  "10.11.0.0",
+                         "sourceUrl":  "https://github.com/marcomoerz/jellyfin-plugin-tvheadend/releases/download/v15.0.0.0/tvheadend_15.0.0.0.zip",
+                         "checksum":  "a309311c5350635ccd687e02130ed554",
+                         "timestamp":  "2026-09-05T14:21:18Z"
+                     },
+                     {
                          "version":  "14.0.0.0",
                          "changelog":  "",
                          "targetAbi":  "10.11.0.0",
