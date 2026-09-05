@@ -213,6 +213,10 @@ namespace TVHeadEnd
             _logger.LogInformation(
                 "[TVHclient] HTSConnectionHandler: plugin configuration changed, re-reading it on next use");
             _configured = false;
+
+            // A different server, streaming profile or transcoding setting can change what a
+            // channel delivers, so what was measured before no longer describes it.
+            _liveTvService?.ForgetChannelDescriptions();
         }
 
         public string? GetChannelImageUrl(string channelId)
@@ -234,7 +238,7 @@ namespace TVHeadEnd
             }
             else
             {
-                return "http://" + _userName + ":" + _password + "@" +_tvhServerName + ":" + _httpPort + _webRoot + "/" + channelIcon;
+                return HttpBaseUrlWithCredentials() + "/" + channelIcon;
             }
         }
 
@@ -293,6 +297,7 @@ namespace TVHeadEnd
                 _channelDataHelper.Clean();
                 _dvrDataHelper.clean();
                 _autorecDataHelper.clean();
+                _liveTvService?.ForgetChannelDescriptions();
 
                 // A different server, or the same one after an upgrade, may send different
                 // fields — so dump the first of each kind again.
@@ -371,7 +376,27 @@ namespace TVHeadEnd
         public String GetHttpBaseUrlWithCredentials()
         {
             init();
-            return "http://" + _userName + ":" + _password + "@" + _tvhServerName + ":" + _httpPort + _webRoot;
+            return HttpBaseUrlWithCredentials();
+        }
+
+        private string HttpBaseUrlWithCredentials()
+        {
+            return BuildHttpBaseUrl(_userName, _password, _tvhServerName, _httpPort, _webRoot);
+        }
+
+        /// <summary>
+        /// Builds the base URL with the credentials in it.
+        /// </summary>
+        /// <remarks>
+        /// Both parts have to be percent encoded. A password containing '@', ':', '/', '?' or '#'
+        /// is legal in TVHeadend and would otherwise be read as part of the host or the path, so
+        /// the request goes somewhere else entirely and playback fails with nothing in the log
+        /// that points at the password.
+        /// </remarks>
+        public static string BuildHttpBaseUrl(string userName, string password, string host, int port, string webRoot)
+        {
+            return "http://" + Uri.EscapeDataString(userName) + ":" + Uri.EscapeDataString(password)
+                + "@" + host + ":" + port + webRoot;
         }
 
         public String GetHttpBaseUrlWithoutCredentials()

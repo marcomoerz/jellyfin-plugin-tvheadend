@@ -48,8 +48,7 @@ namespace TVHeadEnd.DataHelper
             string id = message.getString("id");
             lock (_data)
             {
-                HTSMessage oldMessage = _data[id];
-                if (oldMessage == null)
+                if (!_data.TryGetValue(id, out HTSMessage? oldMessage))
                 {
                     _logger.LogDebug("[TVHclient] AutorecDataHelper.autorecEntryAdd: id not in database - skipping");
                     return;
