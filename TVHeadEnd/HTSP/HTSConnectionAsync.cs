@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Data;
 using System.IO;
 using System.Net.Sockets;
 using System.Threading;
@@ -10,21 +11,9 @@ using TVHeadEnd.Helper;
 
 namespace TVHeadEnd.HTSP
 {
-    /// <summary>
-    /// A single HTSP connection to a TVHeadend server.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The connection is a full duplex link that multiplexes many outstanding requests, so every
-    /// request carries a sequence number and the reply has to be matched back to whoever asked.
-    /// That correlation is the whole reason this class exists.
-    /// </para>
-    /// <para>
-    /// The instance is single use: once it faults it stays faulted, <see cref="IsFaulted"/> turns
-    /// true and the owner is expected to dispose it and build a new one. That keeps the lifetime
-    /// trivial to reason about — no half-reconnected states.
-    /// </para>
-    /// </remarks>
+
+    
+
     public sealed class HTSConnectionAsync : IAsyncDisposable
     {
         /// <summary>Guards against a corrupt length prefix turning into a huge allocation.</summary>
@@ -33,7 +22,6 @@ namespace TVHeadEnd.HTSP
         private readonly HTSConnectionListener _listener;
         private readonly string _clientName;
         private readonly string _clientVersion;
-        private readonly ILoggerFactory _loggerFactory;
         private readonly ILogger<HTSConnectionAsync> _logger;
         private readonly ILogger<HTSMessage> _messageLogger;
 
@@ -52,12 +40,12 @@ namespace TVHeadEnd.HTSP
         private int _faultSignalled;
         private int _disposed;
 
-        private NetworkStream _stream;
-        private Task _sendLoop;
-        private Task _receiveLoop;
-        private Task _dispatchLoop;
+        private NetworkStream? _stream;
+        private Task? _sendLoop;
+        private Task? _receiveLoop;
+        private Task? _dispatchLoop;
 
-        private int _serverProtocolVersion;
+        private int _serverProtocolVersion = -1;
         private string _servername = "n/a";
         private string _serverversion = "n/a";
         private string _diskSpace = "n/a";
@@ -67,7 +55,6 @@ namespace TVHeadEnd.HTSP
             _listener = listener;
             _clientName = clientName;
             _clientVersion = clientVersion;
-            _loggerFactory = loggerFactory;
             _logger = loggerFactory.CreateLogger<HTSConnectionAsync>();
             _messageLogger = loggerFactory.CreateLogger<HTSMessage>();
 
@@ -106,27 +93,33 @@ namespace TVHeadEnd.HTSP
             }
             catch
             {
+                _logger.LogError("[TVHclient] HTSConnectionAsync.ConnectAsync: failed to connect to {host}:{port}", hostname, port);
                 socket.Dispose();
                 throw;
             }
 
             _logger.LogDebug("[TVHclient] HTSConnectionAsync.ConnectAsync: connected to {host}:{port}", hostname, port);
 
-            _stream = new NetworkStream(socket, ownsSocket: true);
+            NetworkStream stream = new NetworkStream(socket, ownsSocket: true);
+            _stream = stream;
 
             CancellationToken token = _shutdown.Token;
-            _receiveLoop = Task.Run(() => ReceiveLoopAsync(token), CancellationToken.None);
-            _sendLoop = Task.Run(() => SendLoopAsync(token), CancellationToken.None);
+            // CancellationToken.None is deliberate: the loops are expected to run until the connection is closed,
+            // and the cancellation token is used only to break out of the async waits. The loops themselves are not cancellable.
+            _receiveLoop = Task.Run(() => ReceiveLoopAsync(stream, token), CancellationToken.None);
+            _sendLoop = Task.Run(() => SendLoopAsync(stream, token), CancellationToken.None);
             _dispatchLoop = Task.Run(() => DispatchLoopAsync(token), CancellationToken.None);
         }
 
         /// <summary>
-        /// Sends a request and waits for the matching reply.
+        /// Sends a message and waits for its reply.
         /// </summary>
-        public async Task<HTSMessage> SendRequestAsync(HTSMessage message, TimeSpan timeout, CancellationToken cancellationToken)
+        /// <remarks>
+        /// The reply is matched by sequence number, which is written into the message before
+        /// sending. The caller must not reuse the message object afterwards.
+        /// </remarks>
+        public async Task<Result<HTSMessage, HtspError>> SendRequestAsync(HTSMessage message, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            ArgumentNullException.ThrowIfNull(message);
-
             int sequenceNumber = NextSequenceNumber();
             TaskCompletionSource<HTSMessage> pending =
                 new TaskCompletionSource<HTSMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -137,9 +130,16 @@ namespace TVHeadEnd.HTSP
             try
             {
                 message.putField("seq", sequenceNumber);
-                await _outgoing.Writer.WriteAsync(message, cancellationToken).ConfigureAwait(false);
 
-                return await pending.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _outgoing.Writer.WriteAsync(message, cancellationToken).ConfigureAwait(false);
+                    return await pending.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    return Classify(ex, timeout, cancellationToken);
+                }
             }
             finally
             {
@@ -153,13 +153,43 @@ namespace TVHeadEnd.HTSP
         /// Sends a message that has no reply to correlate. Deliberately carries no sequence
         /// number, so TVHeadend does not echo one back for nobody.
         /// </summary>
-        public ValueTask PostAsync(HTSMessage message, CancellationToken cancellationToken)
+        public async ValueTask<Result<Unit, HtspError>> PostAsync(HTSMessage message, CancellationToken cancellationToken)
         {
-            ArgumentNullException.ThrowIfNull(message);
-            return _outgoing.Writer.WriteAsync(message, cancellationToken);
+            try
+            {
+                await _outgoing.Writer.WriteAsync(message, cancellationToken).ConfigureAwait(false);
+                return Unit.Value;
+            }
+            catch (Exception ex)
+            {
+                return Classify(ex, timeout: null, cancellationToken);
+            }
         }
 
-        public async Task<bool> AuthenticateAsync(string username, string password, TimeSpan timeout, CancellationToken cancellationToken)
+        /// <summary>
+        /// Turns the exceptions the plumbing throws into the error categories callers act on.
+        /// </summary>
+        private static HtspError Classify(Exception exception, TimeSpan? timeout, CancellationToken cancellationToken)
+        {
+            return exception switch
+            {
+                OperationCanceledException when cancellationToken.IsCancellationRequested => new HtspError.Cancelled(),
+                TimeoutException => new HtspError.Timeout(timeout ?? System.Threading.Timeout.InfiniteTimeSpan),
+                ChannelClosedException => new HtspError.ConnectionClosed(),
+                ObjectDisposedException => new HtspError.ConnectionClosed(),
+                _ => new HtspError.Transport(exception.Message),
+            };
+        }
+
+        /// <summary>
+        /// Performs the HTSP login handshake and subscribes to the metadata stream.
+        /// </summary>
+        /// <remarks>
+        /// Three requests that each depend on the previous one: hello returns the challenge the
+        /// password is salted with, authenticate answers it, and only then may we subscribe.
+        /// Chained rather than nested so the failure of any step short circuits the rest.
+        /// </remarks>
+        public Task<Result<Unit, HtspError>> AuthenticateAsync(string username, string password, TimeSpan timeout, CancellationToken cancellationToken)
         {
             HTSMessage helloMessage = new HTSMessage();
             helloMessage.Method = "hello";
@@ -168,58 +198,93 @@ namespace TVHeadEnd.HTSP
             helloMessage.putField("htspversion", HTSMessage.HTSP_VERSION);
             helloMessage.putField("username", username);
 
-            HTSMessage helloResponse = await SendRequestAsync(helloMessage, timeout, cancellationToken).ConfigureAwait(false);
+            return SendRequestAsync(helloMessage, timeout, cancellationToken)
+                .TapErrorAsync(error => _logger.LogError(
+                    "[TVHclient] HTSConnectionAsync: hello failed: {error}", error.Describe()))
+                .AndThenAsync(helloResponse => Authenticate(helloResponse, username, password, timeout, cancellationToken))
+                .AndThenAsync(_ => SubscribeToMetadata(username, timeout, cancellationToken));
+        }
 
+        /// <summary>Answers the server challenge with the salted password digest.</summary>
+        private Task<Result<HTSMessage, HtspError>> Authenticate(
+            HTSMessage helloResponse, string username, string password, TimeSpan timeout, CancellationToken cancellationToken)
+        {
             _serverProtocolVersion = ReadField(helloResponse, "htspversion", m => m.getInt("htspversion"), -1);
             _servername = ReadField(helloResponse, "servername", m => m.getString("servername"), "n/a");
             _serverversion = ReadField(helloResponse, "serverversion", m => m.getString("serverversion"), "n/a");
-            byte[] salt = ReadField(helloResponse, "challenge", m => m.getByteArray("challenge"), Array.Empty<byte>());
+
+            byte[] salt = ReadField(helloResponse, "challenge", m => m.getByteArray("challenge"), []);
 
             HTSMessage authMessage = new HTSMessage();
             authMessage.Method = "authenticate";
             authMessage.putField("username", username);
             authMessage.putField("digest", SHA1helper.GenerateSaltedSHA1(password, salt));
 
-            HTSMessage authResponse = await SendRequestAsync(authMessage, timeout, cancellationToken).ConfigureAwait(false);
-            if (authResponse.getInt("noaccess", 0) == 1)
-            {
-                _logger.LogError("[TVHclient] HTSConnectionAsync.AuthenticateAsync: access denied for user '{user}'", username);
-                return false;
-            }
-
-            await ReadDiskSpaceAsync(timeout, cancellationToken).ConfigureAwait(false);
-
-            // Subscribe to the metadata stream. The replies to this arrive without a sequence
-            // number and are routed to the listener.
-            HTSMessage enableAsyncMetadata = new HTSMessage();
-            enableAsyncMetadata.Method = "enableAsyncMetadata";
-            await PostAsync(enableAsyncMetadata, cancellationToken).ConfigureAwait(false);
-
-            _logger.LogDebug("[TVHclient] HTSConnectionAsync.AuthenticateAsync: authenticated as '{user}'", username);
-            return true;
+            return SendRequestAsync(authMessage, timeout, cancellationToken)
+                .TapErrorAsync(error => _logger.LogError(
+                    "[TVHclient] HTSConnectionAsync: authenticate failed: {error}", error.Describe()))
+                .AndThen(authResponse => RejectIfDenied(authResponse, username));
         }
 
-        private async Task ReadDiskSpaceAsync(TimeSpan timeout, CancellationToken cancellationToken)
+        /// <summary>
+        /// TVHeadend answers a wrong password with noaccess rather than an error field.
+        /// </summary>
+        private Result<HTSMessage, HtspError> RejectIfDenied(HTSMessage authResponse, string username)
+        {
+            if (authResponse.getInt("noaccess", 0) != 1)
+            {
+                return authResponse;
+            }
+
+            _logger.LogError(
+                "[TVHclient] HTSConnectionAsync: access denied for user '{user}'", username);
+            return new HtspError.Rejected($"access denied for user '{username}'");
+        }
+
+        /// <summary>
+        /// Subscribes to the metadata stream. Its messages arrive without a sequence number and
+        /// are routed to the listener.
+        /// </summary>
+        private async Task<Result<Unit, HtspError>> SubscribeToMetadata(
+            string username, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            // Disk space is decoration for the settings page. A server that will not report it is
+            // still perfectly usable, so this must not fail the login.
+            (await ReadDiskSpaceAsync(timeout, cancellationToken).ConfigureAwait(false))
+                .TapError(error => _logger.LogError(
+                    "[TVHclient] HTSConnectionAsync: could not read disk space: {error}", error.Describe()));
+
+            HTSMessage enableAsyncMetadata = new HTSMessage();
+            enableAsyncMetadata.Method = "enableAsyncMetadata";
+
+            return (await PostAsync(enableAsyncMetadata, cancellationToken).ConfigureAwait(false))
+                .TapError(error => _logger.LogError(
+                    "[TVHclient] HTSConnectionAsync: could not enable async metadata: {error}", error.Describe()))
+                .Tap(_ => _logger.LogDebug(
+                    "[TVHclient] HTSConnectionAsync.AuthenticateAsync: authenticated as '{user}'", username));
+        }
+
+        private async Task<Result<Unit, HtspError>> ReadDiskSpaceAsync(TimeSpan timeout, CancellationToken cancellationToken)
         {
             const long BytesPerGiga = 1024 * 1024 * 1024;
 
-            try
-            {
-                HTSMessage request = new HTSMessage();
-                request.Method = "getDiskSpace";
+            HTSMessage request = new HTSMessage();
+            request.Method = "getDiskSpace";
 
-                HTSMessage response = await SendRequestAsync(request, timeout, cancellationToken).ConfigureAwait(false);
-
-                long free = ReadField(response, "freediskspace", m => m.getLong("freediskspace"), -1L) / BytesPerGiga;
-                long total = ReadField(response, "totaldiskspace", m => m.getLong("totaldiskspace"), -1L) / BytesPerGiga;
-
+            return (await SendRequestAsync(request, timeout, cancellationToken).ConfigureAwait(false)).AndThen(
+                diskSpaceResponse => {
+                
+                long free = ReadField(diskSpaceResponse, "freediskspace", m => m.getLong("freediskspace"), -1L) / BytesPerGiga;
+                long total = ReadField(diskSpaceResponse, "totaldiskspace", m => m.getLong("totaldiskspace"), -1L) / BytesPerGiga;
+                if (free < 0 || total < 0)
+                {
+                    _logger.LogDebug("[TVHclient] HTSConnectionAsync.ReadDiskSpaceAsync: invalid disk space values received from server");
+                    return Result<Unit, HtspError>.Failure(new HtspError.Rejected("invalid disk space values received from server"));
+                }
                 _diskSpace = free + "GB / " + total + "GB";
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // Disk space is cosmetic; never let it fail the login.
-                _logger.LogDebug(ex, "[TVHclient] HTSConnectionAsync: could not read disk space");
-            }
+                _logger.LogDebug("[TVHclient] HTSConnectionAsync.ReadDiskSpaceAsync: disk space is {diskSpace}", _diskSpace);
+                return Unit.Value;
+            });
         }
 
         private T ReadField<T>(HTSMessage message, string field, Func<HTSMessage, T> read, T fallback)
@@ -241,7 +306,7 @@ namespace TVHeadEnd.HTSP
             return Interlocked.Increment(ref _sequenceNumber) & 0x7FFFFFFF;
         }
 
-        private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
+        private async Task ReceiveLoopAsync(NetworkStream stream, CancellationToken cancellationToken)
         {
             byte[] lengthPrefix = new byte[4];
 
@@ -249,7 +314,7 @@ namespace TVHeadEnd.HTSP
             {
                 while (true)
                 {
-                    await _stream.ReadExactlyAsync(lengthPrefix, cancellationToken).ConfigureAwait(false);
+                    await stream.ReadExactlyAsync(lengthPrefix, cancellationToken).ConfigureAwait(false);
 
                     long payloadLength = HTSMessage.uIntToLong(lengthPrefix[0], lengthPrefix[1], lengthPrefix[2], lengthPrefix[3]);
                     if (payloadLength < 0 || payloadLength > MaxMessageBytes)
@@ -261,7 +326,7 @@ namespace TVHeadEnd.HTSP
                     // HTSMessage.parse expects the length prefix to still be there.
                     byte[] frame = new byte[payloadLength + 4];
                     Array.Copy(lengthPrefix, frame, 4);
-                    await _stream.ReadExactlyAsync(frame.AsMemory(4, (int)payloadLength), cancellationToken).ConfigureAwait(false);
+                    await stream.ReadExactlyAsync(frame.AsMemory(4, (int)payloadLength), cancellationToken).ConfigureAwait(false);
 
                     HTSMessage message = HTSMessage.parse(frame, _messageLogger);
                     if (message != null)
@@ -284,14 +349,14 @@ namespace TVHeadEnd.HTSP
             }
         }
 
-        private async Task SendLoopAsync(CancellationToken cancellationToken)
+        private async Task SendLoopAsync(NetworkStream stream, CancellationToken cancellationToken)
         {
             try
             {
                 await foreach (HTSMessage message in _outgoing.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
                 {
                     byte[] data = message.BuildBytes();
-                    await _stream.WriteAsync(data, cancellationToken).ConfigureAwait(false);
+                    await stream.WriteAsync(data, cancellationToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -313,7 +378,7 @@ namespace TVHeadEnd.HTSP
                     if (message.containsField("seq"))
                     {
                         int sequenceNumber = message.getInt("seq");
-                        if (_pending.TryRemove(sequenceNumber, out TaskCompletionSource<HTSMessage> pending))
+                        if (_pending.TryRemove(sequenceNumber, out TaskCompletionSource<HTSMessage>? pending))
                         {
                             pending.TrySetResult(message);
                         }
@@ -370,7 +435,7 @@ namespace TVHeadEnd.HTSP
             // the caller can report.
             foreach (var entry in _pending)
             {
-                if (_pending.TryRemove(entry.Key, out TaskCompletionSource<HTSMessage> pending))
+                if (_pending.TryRemove(entry.Key, out TaskCompletionSource<HTSMessage>? pending))
                 {
                     pending.TrySetException(ex);
                 }
@@ -399,7 +464,7 @@ namespace TVHeadEnd.HTSP
             ObjectDisposedException disposed = new ObjectDisposedException(nameof(HTSConnectionAsync));
             foreach (var entry in _pending)
             {
-                if (_pending.TryRemove(entry.Key, out TaskCompletionSource<HTSMessage> pending))
+                if (_pending.TryRemove(entry.Key, out TaskCompletionSource<HTSMessage>? pending))
                 {
                     pending.TrySetException(disposed);
                 }
@@ -407,8 +472,8 @@ namespace TVHeadEnd.HTSP
 
             try
             {
-                Task[] loops = new[] { _sendLoop, _receiveLoop, _dispatchLoop };
-                foreach (Task loop in loops)
+                Task?[] loops = new[] { _sendLoop, _receiveLoop, _dispatchLoop };
+                foreach (Task? loop in loops)
                 {
                     if (loop != null)
                     {

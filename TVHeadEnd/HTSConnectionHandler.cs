@@ -15,6 +15,7 @@ using MediaBrowser.Model.Plugins;
 using Microsoft.Extensions.Logging;
 using Microsoft.Net.Http.Headers;
 using TVHeadEnd.DataHelper;
+using TVHeadEnd.Helper;
 using TVHeadEnd.HTSP;
 
 
@@ -22,7 +23,7 @@ namespace TVHeadEnd
 {
     public class HTSConnectionHandler : HTSConnectionListener
     {
-        private static volatile HTSConnectionHandler _instance;
+        private static volatile HTSConnectionHandler? _instance;
         private static object _syncRoot = new Object();
 
         /// <summary>Serialises connection setup so a burst of callers builds exactly one connection.</summary>
@@ -46,16 +47,16 @@ namespace TVHeadEnd
         private volatile Boolean _configurationChangeHooked = false;
 
         /// <summary>Volatile: read on the fast path outside <see cref="_connectionGate"/>.</summary>
-        private volatile HTSConnectionAsync _htsConnection;
+        private volatile HTSConnectionAsync? _htsConnection;
         private int _priority;
-        private string _profile;
-        private string _channelType;
-        private string _tvhServerName;
+        private string _profile = string.Empty;
+        private string _channelType = string.Empty;
+        private string _tvhServerName = string.Empty;
         private int _httpPort;
         private int _htspPort;
-        private string _webRoot;
-        private string _userName;
-        private string _password;
+        private string _webRoot = string.Empty;
+        private string _userName = string.Empty;
+        private string _password = string.Empty;
         private bool _enableSubsMaudios;
         private bool _forceDeinterlace;
 
@@ -64,7 +65,7 @@ namespace TVHeadEnd
         private readonly DvrDataHelper _dvrDataHelper;
         private readonly AutorecDataHelper _autorecDataHelper;
 
-        private LiveTvService _liveTvService;
+        private LiveTvService? _liveTvService;
 
         private Dictionary<string, string> _headers = new Dictionary<string, string>();
 
@@ -105,7 +106,7 @@ namespace TVHeadEnd
             _liveTvService = liveTvService;
         }
 
-        public LiveTvService getLiveTvService()
+        public LiveTvService? getLiveTvService()
         {
             return _liveTvService;
         }
@@ -204,14 +205,14 @@ namespace TVHeadEnd
             }
         }
 
-        private void OnPluginConfigurationChanged(object sender, BasePluginConfiguration e)
+        private void OnPluginConfigurationChanged(object? sender, BasePluginConfiguration e)
         {
             _logger.LogInformation(
                 "[TVHclient] HTSConnectionHandler: plugin configuration changed, re-reading it on next use");
             _configured = false;
         }
 
-        public string GetChannelImageUrl(string channelId)
+        public string? GetChannelImageUrl(string channelId)
         {
             init();
 
@@ -261,7 +262,7 @@ namespace TVHeadEnd
         {
             init();
 
-            HTSConnectionAsync current = _htsConnection;
+            HTSConnectionAsync? current = _htsConnection;
             if (current != null && !current.IsFaulted)
             {
                 return current;
@@ -295,7 +296,7 @@ namespace TVHeadEnd
                     "User = '{user}'; Password set = '{passexists}'",
                     _tvhServerName, _httpPort, _htspPort, _webRoot, _userName, _password.Length > 0);
 
-                Version version = Assembly.GetEntryAssembly().GetName().Version;
+                Version? version = Assembly.GetEntryAssembly()?.GetName().Version;
                 HTSConnectionAsync connection = new HTSConnectionAsync(
                     this, "TVHclient4Emby-" + version, "" + HTSMessage.HTSP_VERSION, _loggerFactory);
 
@@ -303,10 +304,14 @@ namespace TVHeadEnd
                 {
                     await connection.ConnectAsync(_tvhServerName, _htspPort, cancellationToken).ConfigureAwait(false);
 
-                    if (!await connection.AuthenticateAsync(_userName, _password, _requestTimeout, cancellationToken).ConfigureAwait(false))
+                    Result<Unit, HtspError> authentication = await connection
+                        .AuthenticateAsync(_userName, _password, _requestTimeout, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (!authentication.IsSuccess)
                     {
                         throw new InvalidOperationException(
-                            "TVHeadend rejected the configured credentials");
+                            $"TVHeadend rejected the connection: {authentication.Error.Describe()}");
                     }
                 }
                 catch
@@ -326,8 +331,11 @@ namespace TVHeadEnd
         }
 
         /// <summary>Sends a request over the current connection and awaits its reply.</summary>
-        /// <exception cref="TimeoutException">No reply arrived within <paramref name="timeout"/>.</exception>
-        public async Task<HTSMessage> SendRequestAsync(HTSMessage message, TimeSpan timeout, CancellationToken cancellationToken)
+        /// <remarks>
+        /// Passes the result through unchanged. Translating it into an exception here would throw
+        /// away the category the callers act on.
+        /// </remarks>
+        public async Task<Result<HTSMessage, HtspError>> SendRequestAsync(HTSMessage message, TimeSpan timeout, CancellationToken cancellationToken)
         {
             HTSConnectionAsync connection = await GetConnectionAsync(cancellationToken).ConfigureAwait(false);
             return await connection.SendRequestAsync(message, timeout, cancellationToken).ConfigureAwait(false);
