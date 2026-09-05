@@ -422,9 +422,10 @@ namespace TVHeadEnd
             return _dvrDataHelper.buildDvrInfos(cancellationToken);
         }
 
-        public Task<IEnumerable<SeriesTimerInfo>> BuildAutorecInfos(CancellationToken cancellationToken)
+        public Task<IEnumerable<SeriesTimerInfo>> BuildAutorecInfos(
+            CancellationToken cancellationToken, TimeSpan serverUtcOffset)
         {
-            return _autorecDataHelper.buildAutorecInfos(cancellationToken);
+            return _autorecDataHelper.buildAutorecInfos(cancellationToken, serverUtcOffset);
         }
 
         public Task<IEnumerable<TimerInfo>> BuildPendingTimersInfos(CancellationToken cancellationToken)

@@ -10,6 +10,7 @@ using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.DataHelper;
 using TVHeadEnd.Helper;
 using TVHeadEnd.HTSP;
 using TVHeadEnd.HTSP_Responses;
@@ -97,12 +98,25 @@ namespace TVHeadEnd
             }, cancellationToken);
         }
 
+        /// <summary>
+        /// Creates a recurring recording: a TVHeadend autorec entry that records every guide
+        /// event whose title matches.
+        /// </summary>
         public async Task CreateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
         {
-            // Dummy method to avoid warnings
-            await Task.Factory.StartNew(() => 0, cancellationToken);
+            string operation = $"CreateSeriesTimerAsync('{info.Name}')";
+            await EnsureConnectionReady(operation, cancellationToken);
 
-            throw new NotImplementedException();
+            HTSMessage request = AutorecRequest.Create(
+                info,
+                _htsConnectionHandler.GetPriority(),
+                _htsConnectionHandler.GetProfile(),
+                await ReadServerUtcOffsetAsync(cancellationToken).ConfigureAwait(false));
+
+            Result<HTSMessage, HtspError> result = await SendAsync(request, cancellationToken);
+            ThrowOnFailure(result, operation, missingIsSuccess: false);
+
+            _lastRecordingChange = DateTime.UtcNow;
         }
 
         public async Task CreateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
@@ -117,7 +131,10 @@ namespace TVHeadEnd
             createTimerMessage.putField("stop", DateTimeHelper.getUnixUTCTimeFromUtcDateTime(info.EndDate));
             createTimerMessage.putField("startExtra", (long)(info.PrePaddingSeconds / 60));
             createTimerMessage.putField("stopExtra", (long)(info.PostPaddingSeconds / 60));
-            createTimerMessage.putField("priority", _htsConnectionHandler.GetPriority()); // info.Priority delivers always 0 - no GUI
+            // Read straight from the configuration rather than from info.Priority. Jellyfin fills
+            // that field from GetNewTimerDefaultsAsync, so it carries the same value — but only
+            // as long as it keeps doing so, and there is no field for it in its interface.
+            createTimerMessage.putField("priority", _htsConnectionHandler.GetPriority());
             createTimerMessage.putField("configName", _htsConnectionHandler.GetProfile());
             createTimerMessage.putField("description", info.Overview);
             createTimerMessage.putField("title", info.Name);
@@ -476,19 +493,54 @@ namespace TVHeadEnd
             return [source];
         }
 
-        public async Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo? program = null)
+        /// <summary>
+        /// Describes what a new recording looks like before the user has changed anything.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Not all of this survives. Jellyfin overwrites <c>RecordAnyTime</c> and <c>Days</c>
+        /// with "at any time, every day" the moment this returns, and it takes <c>Priority</c>
+        /// out of here for every timer it creates — those two facts are why the values below are
+        /// what they are. The rest reaches the dialog as the state its fields start in.
+        /// </para>
+        /// <para>
+        /// Recording on any channel is the one that has to be right. TVHeadend matches a rule by
+        /// title, so "Tatort" without a channel records it on every station that carries it: ARD,
+        /// ONE, and every regional channel repeating it, all at once. The programme the user
+        /// picked names a channel, and that is the channel they meant.
+        /// </para>
+        /// </remarks>
+        public Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo? program = null)
         {
-            return await Task.Factory.StartNew(() =>
+            SeriesTimerInfo defaults = new SeriesTimerInfo
             {
-                return new SeriesTimerInfo
-                {
-                    PrePaddingSeconds = Plugin.Instance.Configuration.Pre_Padding,
-                    PostPaddingSeconds = Plugin.Instance.Configuration.Post_Padding,
-                    RecordAnyChannel = true,
-                    RecordAnyTime = true,
-                    RecordNewOnly = false
-                };
-            }, cancellationToken);
+                PrePaddingSeconds = Plugin.Instance.Configuration.Pre_Padding,
+                PostPaddingSeconds = Plugin.Instance.Configuration.Post_Padding,
+
+                // Jellyfin reads the priority of every new timer out of these defaults, and it
+                // has no field of its own for it.
+                Priority = _htsConnectionHandler.GetPriority(),
+
+                RecordAnyChannel = false,
+                RecordAnyTime = true,
+
+                // A repeat of something already recorded is rarely what was meant.
+                RecordNewOnly = true,
+            };
+
+            if (null != program)
+            {
+                defaults.Name = program.Name;
+                defaults.ChannelId = program.ChannelId;
+                defaults.ProgramId = program.Id;
+                defaults.SeriesId = program.SeriesId;
+                defaults.StartDate = program.StartDate;
+
+                // Asking to record a repeat means the repeat is the point.
+                defaults.RecordNewOnly = !program.IsRepeat;
+            }
+
+            return Task.FromResult(defaults);
         }
 
         public async Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime startDateUtc, DateTime endDateUtc, CancellationToken cancellationToken)
@@ -532,9 +584,11 @@ namespace TVHeadEnd
                 return new List<SeriesTimerInfo>();
             }
 
+            TimeSpan serverUtcOffset = await ReadServerUtcOffsetAsync(cancellationToken).ConfigureAwait(false);
+
             try
             {
-                return await _htsConnectionHandler.BuildAutorecInfos(cancellationToken)
+                return await _htsConnectionHandler.BuildAutorecInfos(cancellationToken, serverUtcOffset)
                     .WaitAsync(_timeout, cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -574,19 +628,28 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// Changing a series recording is not supported yet.
+        /// Changes a recurring recording in place.
         /// </summary>
         /// <remarks>
-        /// This used to remove the autorec entry and stop there, because recreating it needs
-        /// <see cref="CreateSeriesTimerAsync"/>, which does not exist yet. Jellyfin reported the
-        /// change as saved and the series recording was gone. Refusing loudly loses nothing;
-        /// pretending to succeed lost the recording.
+        /// TVHeadend applies the fields it is sent and keeps the rest, and this sends every
+        /// field the rule was created from — so what Jellyfin shows is what the rule becomes.
+        /// A missing entry is a genuine failure: there is nothing to change.
         /// </remarks>
-        public Task UpdateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
+        public async Task UpdateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
         {
-            throw new NotSupportedException(
-                "Changing a series recording is not supported by this plugin yet. "
-                + "Delete it and create a new one, or change it in TVHeadend directly.");
+            string operation = $"UpdateSeriesTimerAsync('{info.Id}')";
+            await EnsureConnectionReady(operation, cancellationToken);
+
+            HTSMessage request = AutorecRequest.Update(
+                info,
+                _htsConnectionHandler.GetPriority(),
+                _htsConnectionHandler.GetProfile(),
+                await ReadServerUtcOffsetAsync(cancellationToken).ConfigureAwait(false));
+
+            Result<HTSMessage, HtspError> result = await SendAsync(request, cancellationToken);
+            ThrowOnFailure(result, operation, missingIsSuccess: false);
+
+            _lastRecordingChange = DateTime.UtcNow;
         }
 
         public async Task UpdateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
@@ -631,6 +694,40 @@ namespace TVHeadEnd
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        /// <summary>
+        /// Reads how far the TVHeadend clock is ahead of UTC.
+        /// </summary>
+        /// <remarks>
+        /// A recurring recording says "around eight in the evening", and TVHeadend matches that
+        /// against the guide in its own local time. Jellyfin works in UTC throughout, so without
+        /// this the rule sits an hour or two off in most of Europe — far enough to miss the
+        /// programme. A server that will not answer is taken to run on UTC: a rule at the wrong
+        /// hour still beats no rule at all.
+        /// </remarks>
+        private async Task<TimeSpan> ReadServerUtcOffsetAsync(CancellationToken cancellationToken)
+        {
+            HTSMessage request = new HTSMessage();
+            request.Method = "getSysTime";
+
+            // Deliberately not SendAsync: getSysTime answers with the time itself and carries no
+            // success field, so interpreting it as an outcome would read every reply as refused.
+            Result<HTSMessage, HtspError> reply = await _htsConnectionHandler
+                .SendRequestAsync(request, _timeout, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!reply.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "LiveTvService: could not read the TVHeadend clock ({error}), assuming UTC",
+                    reply.Error.Describe());
+                return TimeSpan.Zero;
+            }
+
+            TimeSpan offset = TimeSpan.FromMinutes(reply.Value.getInt("gmtoffset", 0));
+            _logger.LogDebug("LiveTvService: the TVHeadend clock is {offset} ahead of UTC", offset);
+            return offset;
         }
 
         /// <summary>

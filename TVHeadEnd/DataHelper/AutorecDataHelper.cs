@@ -15,9 +15,18 @@ namespace TVHeadEnd.DataHelper
 
         private readonly DateTime _initialDateTimeUTC = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
+        private readonly Func<DateTime> _utcNow;
+
         public AutorecDataHelper(ILogger<AutorecDataHelper> logger)
+            : this(logger, () => DateTime.UtcNow)
+        {
+        }
+
+        /// <param name="utcNow">The clock, so the reconstructed start time can be tested.</param>
+        public AutorecDataHelper(ILogger<AutorecDataHelper> logger, Func<DateTime> utcNow)
         {
             _logger = logger;
+            _utcNow = utcNow;
             _data = new Dictionary<string, HTSMessage>();
         }
 
@@ -73,7 +82,12 @@ namespace TVHeadEnd.DataHelper
             }
         }
 
-        public Task<IEnumerable<SeriesTimerInfo>> buildAutorecInfos(CancellationToken cancellationToken)
+        /// <param name="serverUtcOffset">
+        /// How far the TVHeadend clock is ahead of UTC. Its start window is a time of day in the
+        /// server's own time; Jellyfin expects UTC.
+        /// </param>
+        public Task<IEnumerable<SeriesTimerInfo>> buildAutorecInfos(
+            CancellationToken cancellationToken, TimeSpan serverUtcOffset = default)
         {
             return Task.Factory.StartNew<IEnumerable<SeriesTimerInfo>>(() =>
             {
@@ -115,7 +129,20 @@ namespace TVHeadEnd.DataHelper
                         {
                         }
 
-                        sti.StartDate = DateTime.Now.ToUniversalTime();
+                        // What the rule allows, read back the way it was written. Without this
+                        // an unchanged rule saved from Jellyfin would be rewritten to start
+                        // around the moment it was looked at.
+                        sti.RecordAnyChannel = !m.containsField("channel");
+                        sti.RecordNewOnly = m.getInt("dupDetect", 0) != 0;
+
+                        int windowStart = m.getInt("start", AutorecRequest.AnyTime);
+                        sti.RecordAnyTime = windowStart < 0;
+                        sti.StartDate = sti.RecordAnyTime
+                            ? _utcNow()
+                            : ServerLocalTimeOfDayAsUtc(
+                                AutorecRequest.CentreOfStartWindow(
+                                    windowStart, m.getInt("startWindow", AutorecRequest.AnyTime)),
+                                serverUtcOffset);
 
                         try
                         {
@@ -231,6 +258,19 @@ namespace TVHeadEnd.DataHelper
                     return result;
                 }
             });
+        }
+
+        /// <summary>
+        /// Turns a time of day on the TVHeadend server into a UTC instant today.
+        /// </summary>
+        /// <remarks>
+        /// Only the time of day carries meaning here; the date is whatever makes Jellyfin show
+        /// the right hour.
+        /// </remarks>
+        private DateTime ServerLocalTimeOfDayAsUtc(int minuteOfDay, TimeSpan serverUtcOffset)
+        {
+            DateTime serverLocalToday = (_utcNow() + serverUtcOffset).Date;
+            return serverLocalToday.AddMinutes(minuteOfDay) - serverUtcOffset;
         }
 
         private List<DayOfWeek> getDayOfWeekListFromInt(int daysOfWeek)
