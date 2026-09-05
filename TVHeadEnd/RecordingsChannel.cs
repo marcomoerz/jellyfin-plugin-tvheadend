@@ -296,24 +296,16 @@ namespace TVHeadEnd
                         Id = item.Id.GetMD5().ToString("N"),
                         Container = "mpegts",
                         AnalyzeDurationMs = 2000,
-                        MediaStreams = new List<MediaStream>
-                        {
-                            new MediaStream
-                            {
-                                Type = MediaStreamType.Video,
-                                // Set the index to -1 because we don't know the exact index of the video stream within the container
-                                Index = -1,
-                                // Set to true if unknown to enable deinterlacing
-                                IsInterlaced = true,
-                                RealFrameRate = 50.0F
-                            },
-                            new MediaStream
-                            {
-                                Type = MediaStreamType.Audio,
-                                // Set the index to -1 because we don't know the exact index of the audio stream within the container
-                                Index = -1
-                            }
-                        }
+
+                        // Without a bitrate Jellyfin assumes 40 Mbit/s and every client limit is
+                        // exceeded, which by itself forces a transcode.
+                        Bitrate = item.Bitrate,
+
+                        // What exists on disk, which for a running recording is less than the
+                        // scheduled length.
+                        RunTimeTicks = item.RecordedDuration?.Ticks,
+
+                        MediaStreams = DescribeStreams(item),
                     }
                 },
                 //ParentIndexNumber = item.ParentIndexNumber,
@@ -331,6 +323,38 @@ namespace TVHeadEnd
             };
 
             return channelItem;
+        }
+
+        /// <summary>
+        /// Describes what is inside the recording.
+        /// </summary>
+        /// <remarks>
+        /// TVHeadend reports the recorded streams, and passing their codecs on is what lets
+        /// Jellyfin direct play the file: it matches each codec against the client profile and
+        /// rejects anything it cannot name. Where TVHeadend told us nothing — a recording made by
+        /// an older build — we fall back to the shape this plugin always used to claim.
+        /// </remarks>
+        private static IReadOnlyList<MediaStream> DescribeStreams(MyRecordingInfo item)
+        {
+            if (0 < item.MediaStreams.Count)
+            {
+                return item.MediaStreams;
+            }
+
+            return new List<MediaStream>
+            {
+                new MediaStream
+                {
+                    Type = MediaStreamType.Video,
+                    // Unknown: no codec to match, and no index within the container.
+                    Index = -1,
+                },
+                new MediaStream
+                {
+                    Type = MediaStreamType.Audio,
+                    Index = -1,
+                },
+            };
         }
 
         private async Task<ChannelItemResult> GetRecordingGroups(InternalChannelItemQuery query, CancellationToken cancellationToken)
@@ -432,6 +456,33 @@ namespace TVHeadEnd
         /// Id of the recording.
         /// </summary>
         public string Id { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The streams TVHeadend recorded, if it told us about them.
+        /// </summary>
+        /// <remarks>
+        /// Jellyfin decides direct play by matching each stream's codec against the client
+        /// profile, so an empty list here means the recording will always be transcoded.
+        /// </remarks>
+        public IReadOnlyList<MediaStream> MediaStreams { get; set; } = [];
+
+        /// <summary>
+        /// Average bitrate in bits per second, derived from file size and duration.
+        /// </summary>
+        /// <remarks>
+        /// Without it Jellyfin assumes 40 Mbit/s and every client bitrate limit is exceeded.
+        /// </remarks>
+        public int? Bitrate { get; set; }
+
+        /// <summary>
+        /// How much of the recording exists on disk right now.
+        /// </summary>
+        /// <remarks>
+        /// For a finished recording this is its length. For one that is still running it is what
+        /// has been written so far, which is less than the scheduled duration. Reporting the
+        /// scheduled length would promise a seek bar that runs past the end of the file.
+        /// </remarks>
+        public TimeSpan? RecordedDuration { get; set; }
 
         /// <summary>
         /// Gets or sets the series timer identifier.

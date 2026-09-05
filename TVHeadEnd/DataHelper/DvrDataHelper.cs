@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,9 +18,23 @@ namespace TVHeadEnd.DataHelper
 
         private readonly DateTime _initialDateTimeUTC = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
+        private readonly Func<DateTime> _utcNow;
+
+        private static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
         public DvrDataHelper(ILogger<DvrDataHelper> logger)
+            : this(logger, () => DateTime.UtcNow)
+        {
+        }
+
+        /// <param name="utcNow">
+        /// The clock. A running recording is measured against the present, so a test has to be
+        /// able to fix it.
+        /// </param>
+        public DvrDataHelper(ILogger<DvrDataHelper> logger, Func<DateTime> utcNow)
         {
             _logger = logger;
+            _utcNow = utcNow;
             _data = new Dictionary<string, HTSMessage>();
         }
 
@@ -298,11 +313,153 @@ namespace TVHeadEnd.DataHelper
                                 public string Url { get; set; }
                          */
 
+                        ReadRecordedFile(m, ri);
+
                         result.Add(ri);
                     }
                     return result;
                 }
             });
+        }
+
+        /// <summary>
+        /// Reads what TVHeadend knows about the recorded file: which streams it contains, how
+        /// large it is and how much of it exists.
+        /// </summary>
+        /// <remarks>
+        /// TVHeadend writes the stream list when the recording starts (dvr_rec.c), so it is there
+        /// for a running recording too. The per file stop time however is only written when the
+        /// muxer closes, which is why a running recording has to be measured against the clock.
+        /// </remarks>
+        private void ReadRecordedFile(HTSMessage entry, MyRecordingInfo recording)
+        {
+            try
+            {
+                if (!entry.containsField("files"))
+                {
+                    return;
+                }
+
+                IList files = entry.getList("files");
+                if (null == files || 0 == files.Count)
+                {
+                    return;
+                }
+
+                // A recording is split across files when it is interrupted; the streams are the
+                // same in each, so the first one describes the whole recording.
+                if (files[0] is HTSMessage first && first.containsField("info"))
+                {
+                    recording.MediaStreams = HtspStreamMapper.ToMediaStreams(first.getList("info"));
+                }
+
+                if (RecordingStatus.InProgress == recording.Status)
+                {
+                    DescribeRunningRecording(entry, files, recording);
+                }
+                else
+                {
+                    DescribeFinishedRecording(files, recording);
+                }
+            }
+            catch (Exception ex)
+            {
+                // File details are an optimisation, never a reason to drop the recording.
+                _logger.LogDebug(ex, "[TVHclient] DvrDataHelper: could not read file details");
+            }
+        }
+
+        /// <summary>Measures a finished recording from the start and stop times of its files.</summary>
+        private static void DescribeFinishedRecording(IList files, MyRecordingInfo recording)
+        {
+            long totalBytes = 0;
+            long totalSeconds = 0;
+
+            foreach (object? entry in files)
+            {
+                if (entry is not HTSMessage file)
+                {
+                    continue;
+                }
+
+                long size = file.getLong("size", 0);
+                long start = file.getLong("start", 0);
+                long stop = file.getLong("stop", 0);
+
+                if (0 >= size || 0 >= start || stop <= start)
+                {
+                    continue;
+                }
+
+                totalBytes += size;
+                totalSeconds += stop - start;
+            }
+
+            if (0 >= totalSeconds)
+            {
+                return;
+            }
+
+            recording.RecordedDuration = TimeSpan.FromSeconds(totalSeconds);
+            recording.Bitrate = ToBitrate(totalBytes, totalSeconds);
+        }
+
+        /// <summary>
+        /// Measures a running recording against the clock.
+        /// </summary>
+        /// <remarks>
+        /// Its last file has no stop time yet, and the stop time on the entry is the scheduled
+        /// end: it lies in the future and can still be moved. Only the elapsed time describes
+        /// what a viewer can actually watch.
+        /// </remarks>
+        private void DescribeRunningRecording(HTSMessage entry, IList files, MyRecordingInfo recording)
+        {
+            long startedAt = 0;
+            if (files[0] is HTSMessage first)
+            {
+                startedAt = first.getLong("start", 0);
+            }
+
+            if (0 >= startedAt)
+            {
+                startedAt = entry.getLong("start", 0);
+            }
+
+            if (0 >= startedAt)
+            {
+                return;
+            }
+
+            long nowUnix = (long)(_utcNow() - UnixEpoch).TotalSeconds;
+            long elapsedSeconds = nowUnix - startedAt;
+
+            // Never claim more than was scheduled: a clock skew must not invent content.
+            long scheduledStop = entry.getLong("stop", 0);
+            if (0 < scheduledStop && startedAt + elapsedSeconds > scheduledStop)
+            {
+                elapsedSeconds = scheduledStop - startedAt;
+            }
+
+            if (0 >= elapsedSeconds)
+            {
+                return;
+            }
+
+            recording.RecordedDuration = TimeSpan.FromSeconds(elapsedSeconds);
+
+            // dataSize is the live size of the file, updated as it grows.
+            recording.Bitrate = ToBitrate(entry.getLong("dataSize", 0), elapsedSeconds);
+        }
+
+        private static int? ToBitrate(long totalBytes, long totalSeconds)
+        {
+            if (0 >= totalBytes || 0 >= totalSeconds)
+            {
+                return null;
+            }
+
+            long bitsPerSecond = totalBytes * 8 / totalSeconds;
+            return bitsPerSecond > int.MaxValue ? int.MaxValue : (int)bitsPerSecond;
         }
 
         public Task<IEnumerable<TimerInfo>> buildPendingTimersInfos(CancellationToken cancellationToken)
