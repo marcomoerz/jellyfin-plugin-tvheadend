@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging.Abstractions;
+using TVHeadEnd.Helper;
 using TVHeadEnd.HTSP;
 
 namespace TVHeadEnd.Tests;
@@ -10,6 +11,10 @@ namespace TVHeadEnd.Tests;
 /// previous implementation had: replies matched to the wrong caller, callers waiting forever,
 /// and a dying socket triggering one reconnect per worker.
 /// </summary>
+/// <remarks>
+/// The connection reports failure as a <see cref="Result{T, TError}"/> rather than by throwing,
+/// so every assertion here goes through IsSuccess instead of Assert.Throws.
+/// </remarks>
 public class HtspConnectionTests
 {
     private static readonly TimeSpan ShortTimeout = TimeSpan.FromSeconds(5);
@@ -41,9 +46,11 @@ public class HtspConnectionTests
         await using HTSConnectionAsync connection = CreateConnection(listener);
         await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
 
-        HTSMessage response = await connection.SendRequestAsync(Request("test", 42), ShortTimeout, CancellationToken.None);
+        Result<HTSMessage, HtspError> result =
+            await connection.SendRequestAsync(Request("test", 42), ShortTimeout, CancellationToken.None);
 
-        Assert.Equal(42, response.getInt("echo"));
+        Assert.True(result.IsSuccess, result.Error?.Describe());
+        Assert.Equal(42, result.Value.getInt("echo"));
     }
 
     /// <summary>
@@ -79,15 +86,16 @@ public class HtspConnectionTests
         await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
 
         const int Count = 200;
-        Task<HTSMessage>[] inFlight = Enumerable.Range(0, Count)
+        Task<Result<HTSMessage, HtspError>>[] inFlight = Enumerable.Range(0, Count)
             .Select(i => connection.SendRequestAsync(Request("test", i), ShortTimeout, CancellationToken.None))
             .ToArray();
 
-        HTSMessage[] responses = await Task.WhenAll(inFlight);
+        Result<HTSMessage, HtspError>[] responses = await Task.WhenAll(inFlight);
 
         for (int i = 0; i < Count; i++)
         {
-            Assert.Equal(i, responses[i].getInt("echo"));
+            Assert.True(responses[i].IsSuccess, responses[i].Error?.Describe());
+            Assert.Equal(i, responses[i].Value.getInt("echo"));
         }
 
         Assert.Equal(0, listener.ErrorCount);
@@ -102,8 +110,11 @@ public class HtspConnectionTests
         await using HTSConnectionAsync connection = CreateConnection(listener);
         await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
 
-        await Assert.ThrowsAsync<TimeoutException>(() =>
-            connection.SendRequestAsync(Request("test", 1), TimeSpan.FromMilliseconds(200), CancellationToken.None));
+        Result<HTSMessage, HtspError> result = await connection.SendRequestAsync(
+            Request("test", 1), TimeSpan.FromMilliseconds(200), CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.IsType<HtspError.Timeout>(result.Error);
     }
 
     /// <summary>
@@ -130,17 +141,21 @@ public class HtspConnectionTests
         await using HTSConnectionAsync connection = CreateConnection(listener);
         await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
 
-        await Assert.ThrowsAsync<TimeoutException>(() =>
-            connection.SendRequestAsync(Request("slow", 1), TimeSpan.FromMilliseconds(100), CancellationToken.None));
+        Result<HTSMessage, HtspError> abandoned = await connection.SendRequestAsync(
+            Request("slow", 1), TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        Assert.False(abandoned.IsSuccess);
 
         await Task.Delay(800);
 
-        HTSMessage response = await connection.SendRequestAsync(Request("fast", 2), ShortTimeout, CancellationToken.None);
-        Assert.Equal(2, response.getInt("echo"));
+        Result<HTSMessage, HtspError> result =
+            await connection.SendRequestAsync(Request("fast", 2), ShortTimeout, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error?.Describe());
+        Assert.Equal(2, result.Value.getInt("echo"));
     }
 
     [Fact]
-    public async Task SendRequest_Cancelled_ThrowsOperationCanceled()
+    public async Task SendRequest_Cancelled_ReportsFailure()
     {
         await using FakeTvheadendServer server = new(_ => Task.FromResult<HTSMessage?>(null));
 
@@ -149,11 +164,15 @@ public class HtspConnectionTests
         await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
 
         using CancellationTokenSource cts = new();
-        Task<HTSMessage> pending = connection.SendRequestAsync(Request("test", 1), ShortTimeout, cts.Token);
+        Task<Result<HTSMessage, HtspError>> pending =
+            connection.SendRequestAsync(Request("test", 1), ShortTimeout, cts.Token);
 
         await cts.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        Result<HTSMessage, HtspError> result = await pending;
+
+        Assert.False(result.IsSuccess);
+        Assert.IsType<HtspError.Cancelled>(result.Error);
     }
 
     /// <summary>
@@ -174,13 +193,16 @@ public class HtspConnectionTests
         await using HTSConnectionAsync connection = CreateConnection(listener);
         await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
 
-        Task<HTSMessage> pending = connection.SendRequestAsync(Request("test", 1), TimeSpan.FromSeconds(30), CancellationToken.None);
+        Task<Result<HTSMessage, HtspError>> pending =
+            connection.SendRequestAsync(Request("test", 1), TimeSpan.FromSeconds(30), CancellationToken.None);
 
         await server.WaitForClientAsync(ShortTimeout);
         server.DropConnection();
 
         // Must resolve well inside the request timeout, i.e. from the fault and not the clock.
-        await Assert.ThrowsAnyAsync<Exception>(() => pending.WaitAsync(ShortTimeout));
+        Result<HTSMessage, HtspError> result = await pending.WaitAsync(ShortTimeout);
+
+        Assert.False(result.IsSuccess);
         Assert.True(connection.IsFaulted);
 
         await server.DisposeAsync();
@@ -250,8 +272,11 @@ public class HtspConnectionTests
 
         Assert.False(connection.IsFaulted);
 
-        HTSMessage response = await connection.SendRequestAsync(Request("test", 99), ShortTimeout, CancellationToken.None);
-        Assert.Equal(99, response.getInt("echo"));
+        Result<HTSMessage, HtspError> result =
+            await connection.SendRequestAsync(Request("test", 99), ShortTimeout, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error?.Describe());
+        Assert.Equal(99, result.Value.getInt("echo"));
     }
 
     [Fact]
@@ -267,12 +292,15 @@ public class HtspConnectionTests
         HTSConnectionAsync connection = CreateConnection(listener);
         await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
 
-        Task<HTSMessage> pending = connection.SendRequestAsync(Request("test", 1), TimeSpan.FromSeconds(30), CancellationToken.None);
+        Task<Result<HTSMessage, HtspError>> pending =
+            connection.SendRequestAsync(Request("test", 1), TimeSpan.FromSeconds(30), CancellationToken.None);
         await server.WaitForClientAsync(ShortTimeout);
 
         await connection.DisposeAsync();
 
-        await Assert.ThrowsAnyAsync<Exception>(() => pending.WaitAsync(ShortTimeout));
+        Result<HTSMessage, HtspError> result = await pending.WaitAsync(ShortTimeout);
+
+        Assert.False(result.IsSuccess);
     }
 
     [Fact]
@@ -288,5 +316,136 @@ public class HtspConnectionTests
 
         await Assert.ThrowsAnyAsync<Exception>(() =>
             connection.ConnectAsync("127.0.0.1", deadPort, CancellationToken.None).WaitAsync(ShortTimeout));
+    }
+
+    /// <summary>
+    /// The full login handshake: hello returns the challenge, authenticate answers it, and the
+    /// metadata subscription goes out last.
+    /// </summary>
+    [Fact]
+    public async Task Authenticate_CompletesTheHandshake()
+    {
+        List<string> methods = new();
+
+        await using FakeTvheadendServer server = new(request =>
+        {
+            lock (methods)
+            {
+                methods.Add(request.Method);
+            }
+
+            HTSMessage reply = new HTSMessage();
+            switch (request.Method)
+            {
+                case "hello":
+                    reply.putField("htspversion", 20);
+                    reply.putField("servername", "TestTVH");
+                    reply.putField("serverversion", "4.3");
+                    reply.putField("challenge", new byte[] { 1, 2, 3, 4 });
+                    break;
+                case "getDiskSpace":
+                    reply.putField("freediskspace", 50L * 1024 * 1024 * 1024);
+                    reply.putField("totaldiskspace", 200L * 1024 * 1024 * 1024);
+                    break;
+            }
+
+            return Task.FromResult<HTSMessage?>(reply);
+        });
+
+        RecordingListener listener = new();
+        await using HTSConnectionAsync connection = CreateConnection(listener);
+        await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
+
+        Result<Unit, HtspError> result =
+            await connection.AuthenticateAsync("user", "secret", ShortTimeout, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error?.Describe());
+        Assert.Equal(20, connection.GetServerProtocolVersion());
+        Assert.Equal("TestTVH", connection.GetServername());
+        Assert.Equal("50GB / 200GB", connection.GetDiskspace());
+
+        lock (methods)
+        {
+            Assert.Contains("hello", methods);
+            Assert.Contains("authenticate", methods);
+        }
+    }
+
+    [Fact]
+    public async Task Authenticate_WithWrongPassword_Fails()
+    {
+        await using FakeTvheadendServer server = new(request =>
+        {
+            HTSMessage reply = new HTSMessage();
+            if (request.Method == "hello")
+            {
+                reply.putField("challenge", new byte[] { 1, 2, 3, 4 });
+            }
+            else if (request.Method == "authenticate")
+            {
+                reply.putField("noaccess", 1);
+            }
+
+            return Task.FromResult<HTSMessage?>(reply);
+        });
+
+        RecordingListener listener = new();
+        await using HTSConnectionAsync connection = CreateConnection(listener);
+        await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
+
+        Result<Unit, HtspError> result =
+            await connection.AuthenticateAsync("user", "wrong", ShortTimeout, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        HtspError.Rejected rejected = Assert.IsType<HtspError.Rejected>(result.Error);
+        Assert.Contains("access denied", rejected.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Disk space is decoration for the settings page. A server that will not report it must
+    /// still be usable.
+    /// </summary>
+    [Fact]
+    public async Task Authenticate_SucceedsEvenWithoutDiskSpace()
+    {
+        await using FakeTvheadendServer server = new(request =>
+        {
+            HTSMessage reply = new HTSMessage();
+            if (request.Method == "hello")
+            {
+                reply.putField("challenge", new byte[] { 1, 2, 3, 4 });
+            }
+
+            // getDiskSpace answers without the fields.
+            return Task.FromResult<HTSMessage?>(reply);
+        });
+
+        RecordingListener listener = new();
+        await using HTSConnectionAsync connection = CreateConnection(listener);
+        await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
+
+        Result<Unit, HtspError> result =
+            await connection.AuthenticateAsync("user", "secret", ShortTimeout, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error?.Describe());
+    }
+
+    /// <summary>A failing first step must short circuit the rest of the chain.</summary>
+    [Fact]
+    public async Task Authenticate_WhenHelloTimesOut_ReportsThatStep()
+    {
+        await using FakeTvheadendServer server = new(_ => Task.FromResult<HTSMessage?>(null));
+
+        RecordingListener listener = new();
+        await using HTSConnectionAsync connection = CreateConnection(listener);
+        await connection.ConnectAsync("127.0.0.1", server.Port, CancellationToken.None);
+
+        Result<Unit, HtspError> result = await connection.AuthenticateAsync(
+            "user", "secret", TimeSpan.FromMilliseconds(200), CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+
+        // The category survives the whole chain: it is still a timeout, not a generic failure.
+        Assert.IsType<HtspError.Timeout>(result.Error);
     }
 }

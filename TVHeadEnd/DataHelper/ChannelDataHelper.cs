@@ -1,3 +1,7 @@
+// TODO: not yet reviewed for nullability. Remove this line and fix the warnings when
+// touching this file; the project as a whole has nullable reference types enabled.
+#nullable disable
+
 using System;
 using System.Collections;
 using System.Collections.Generic;

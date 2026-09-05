@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using TVHeadEnd.Helper;
 using TVHeadEnd.HTSP;
 using TVHeadEnd.HTSP_Responses;
 
@@ -25,9 +26,9 @@ public class AccessTicketHandler
 
     public record Ticket
     {
-        public string Id { get; init; }
-        public string Path { get; init; }
-        public string TicketParam { get; init; }
+        public required string Id { get; init; }
+        public required string Path { get; init; }
+        public required string TicketParam { get; init; }
         public string Url => $"{Path}?ticket={TicketParam}";
         public DateTime Expires { get; init; }
     }
@@ -55,7 +56,7 @@ public class AccessTicketHandler
     public async Task<Ticket> GetTicket(string itemId, CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
-        Ticket ticket = null;
+        Ticket? ticket = null;
 
         while (_ticketCache.TryGetValue(itemId, out var ticketTask))
         {
@@ -94,7 +95,7 @@ public class AccessTicketHandler
         }
     }
 
-    private Task<Ticket> GetTicketRecord(string itemId, CancellationToken cancellation, Ticket currentRecord, DateTime now)
+    private Task<Ticket> GetTicketRecord(string itemId, CancellationToken cancellation, Ticket? currentRecord, DateTime now)
     {
         return RequestTicket(itemId, cancellation).ContinueWith(ticketTask =>
         {
@@ -130,15 +131,21 @@ public class AccessTicketHandler
              attempt <= lastAttempt && !cancellation.IsCancellationRequested;
              attempt++)
         {
-            try
+            Result<HTSMessage, HtspError> result = await _htsConnectionHandler
+                .SendRequestAsync(request, _requestTimeout * attempt, cancellation)
+                .ConfigureAwait(false);
+
+            if (result.IsSuccess)
             {
-                return await _htsConnectionHandler
-                    .SendRequestAsync(request, _requestTimeout * attempt, cancellation)
-                    .ConfigureAwait(false);
+                return result.Value;
             }
-            catch (TimeoutException)
+
+            // Only a timeout earns another attempt with a longer grace period. A refusal would
+            // just be refused again, and retrying only delays the error the user has to see.
+            if (result.Error is not HtspError.Timeout)
             {
-                // Each attempt gets a longer grace period; fall through and try again.
+                throw new InvalidOperationException(
+                    $"Obtaining a playback ticket from TVHeadend failed: {result.Error.Describe()}");
             }
         }
 

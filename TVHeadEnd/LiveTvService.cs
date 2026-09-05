@@ -63,7 +63,7 @@ namespace TVHeadEnd
             deleteAutorecMessage.Method = "deleteAutorecEntry";
             deleteAutorecMessage.putField("id", timerId);
 
-            HtspResult result = await SendAsync(deleteAutorecMessage, cancellationToken);
+            Result<HTSMessage, HtspError> result = await SendAsync(deleteAutorecMessage, cancellationToken);
             ThrowOnFailure(result, operation, missingIsSuccess: true);
 
             _lastRecordingChange = DateTime.UtcNow;
@@ -78,7 +78,7 @@ namespace TVHeadEnd
             cancelTimerMessage.Method = "cancelDvrEntry";
             cancelTimerMessage.putField("id", timerId);
 
-            HtspResult result = await SendAsync(cancelTimerMessage, cancellationToken);
+            Result<HTSMessage, HtspError> result = await SendAsync(cancelTimerMessage, cancellationToken);
             ThrowOnFailure(result, operation, missingIsSuccess: true);
 
             _lastRecordingChange = DateTime.UtcNow;
@@ -132,7 +132,7 @@ namespace TVHeadEnd
                     + "falling back to a time based recording", info.ProgramId);
             }
 
-            HtspResult result = await SendAsync(createTimerMessage, cancellationToken);
+            Result<HTSMessage, HtspError> result = await SendAsync(createTimerMessage, cancellationToken);
 
             // Returning normally would tell Jellyfin the timer exists, and the user would be left
             // waiting for a recording that was never scheduled.
@@ -150,7 +150,7 @@ namespace TVHeadEnd
             deleteRecordingMessage.Method = "deleteDvrEntry";
             deleteRecordingMessage.putField("id", recordingId);
 
-            HtspResult result = await SendAsync(deleteRecordingMessage, cancellationToken);
+            Result<HTSMessage, HtspError> result = await SendAsync(deleteRecordingMessage, cancellationToken);
 
             // An entry already removed in TVHeadend is the desired end state. Reporting that as a
             // failure would orphan the item in Jellyfin's database with no way to remove it.
@@ -412,7 +412,7 @@ namespace TVHeadEnd
             return [source];
         }
 
-        public async Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo program = null)
+        public async Task<SeriesTimerInfo> GetNewTimerDefaultsAsync(CancellationToken cancellationToken, ProgramInfo? program = null)
         {
             return await Task.Factory.StartNew(() =>
             {
@@ -443,20 +443,20 @@ namespace TVHeadEnd
 
             _logger.LogDebug("LiveTvService.GetProgramsAsync: ask TVH for events of channel '{chanid}'", channelId);
 
-            HTSMessage response;
-            try
+            Result<HTSMessage, HtspError> reply = await _htsConnectionHandler
+                .SendRequestAsync(queryEvents, _timeout, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!reply.IsSuccess)
             {
-                response = await _htsConnectionHandler
-                    .SendRequestAsync(queryEvents, _timeout, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                _logger.LogDebug("LiveTvService.GetProgramsAsync: timeout reached while calling for events of channel '{chanid}'", channelId);
+                // An empty guide is better than a failed page: the rest of the channels may work.
+                _logger.LogDebug(
+                    "LiveTvService.GetProgramsAsync: no events for channel '{chanid}': {error}",
+                    channelId, reply.Error.Describe());
                 return new List<ProgramInfo>();
             }
 
-            return new GetEventsResponseHandler(startDateUtc, endDateUtc, _logger, cancellationToken).Parse(response);
+            return new GetEventsResponseHandler(startDateUtc, endDateUtc, _logger, cancellationToken).Parse(reply.Value);
         }
 
         public async Task<IEnumerable<SeriesTimerInfo>> GetSeriesTimersAsync(CancellationToken cancellationToken)
@@ -528,7 +528,7 @@ namespace TVHeadEnd
             updateTimerMessage.putField("startExtra", (long)(info.PrePaddingSeconds / 60));
             updateTimerMessage.putField("stopExtra", (long)(info.PostPaddingSeconds / 60));
 
-            HtspResult result = await SendAsync(updateTimerMessage, cancellationToken);
+            Result<HTSMessage, HtspError> result = await SendAsync(updateTimerMessage, cancellationToken);
 
             // Updating an entry that no longer exists cannot succeed, so a missing one is a
             // genuine failure here, unlike for the removals.
@@ -562,41 +562,44 @@ namespace TVHeadEnd
         }
 
         /// <summary>
-        /// Performs one HTSP request/response round trip and classifies the outcome.
+        /// Performs one HTSP round trip and classifies what came back.
         /// </summary>
-        private async Task<HtspResult> SendAsync(HTSMessage message, CancellationToken cancellationToken)
+        private async Task<Result<HTSMessage, HtspError>> SendAsync(HTSMessage message, CancellationToken cancellationToken)
         {
-            HTSMessage response;
-            try
-            {
-                response = await _htsConnectionHandler
-                    .SendRequestAsync(message, _timeout, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                return new HtspResult.TimedOut(_timeout);
-            }
+            return (await _htsConnectionHandler
+                .SendRequestAsync(message, _timeout, cancellationToken)
+                .ConfigureAwait(false))
+                .AndThen(Interpret);
+        }
 
+        /// <summary>
+        /// Reads the outcome out of a reply. HTSP answers every request with success = 1 or a
+        /// reason in one of two fields; it has no error codes, so an entry that is already gone
+        /// can only be recognised by the wording.
+        /// </summary>
+        private static Result<HTSMessage, HtspError> Interpret(HTSMessage response)
+        {
             if (response.getInt("success", 0) == 1)
             {
-                return new HtspResult.Ok(response);
+                return response;
             }
 
-            // HTSP has no error codes, it reports the reason in one of two fields as free text.
             string reason =
                 response.containsField("error") ? response.getString("error") :
                 response.containsField("noaccess") ? response.getString("noaccess") :
                 "unknown error";
 
-            return reason.Contains("not found", StringComparison.OrdinalIgnoreCase)
-                ? new HtspResult.NotFound()
-                : new HtspResult.Failed(reason);
+            if (reason.Contains("not found", StringComparison.OrdinalIgnoreCase))
+            {
+                return new HtspError.NotFound();
+            }
+
+            return new HtspError.Rejected(reason);
         }
 
         /// <summary>
-        /// Translates a result into the exception contract Jellyfin expects. This is the single
-        /// place where the internal result type meets the outside world.
+        /// Translates an outcome into the exception contract Jellyfin expects. The single place
+        /// where the internal error model meets the outside world.
         /// </summary>
         /// <param name="result">The outcome to translate.</param>
         /// <param name="operation">Operation description used in the exception message.</param>
@@ -606,28 +609,27 @@ namespace TVHeadEnd
         /// with an item it can never get rid of. False for anything that creates or changes an
         /// entry, where a missing target really is a failure.
         /// </param>
-        private void ThrowOnFailure(HtspResult result, string operation, bool missingIsSuccess)
+        private void ThrowOnFailure(Result<HTSMessage, HtspError> result, string operation, bool missingIsSuccess)
         {
-            switch (result)
+            if (result.IsSuccess)
             {
-                case HtspResult.Ok:
-                    return;
+                return;
+            }
 
-                case HtspResult.NotFound when missingIsSuccess:
+            switch (result.Error)
+            {
+                case HtspError.NotFound when missingIsSuccess:
                     _logger.LogInformation("{Operation}: entry already gone, treating as success", operation);
                     return;
 
-                case HtspResult.NotFound:
-                    throw new InvalidOperationException($"{operation} failed: entry not found");
+                case HtspError.Timeout timeout:
+                    throw new TimeoutException($"{operation}: {timeout.Describe()}");
 
-                case HtspResult.TimedOut timedOut:
-                    throw new TimeoutException($"{operation}: timeout after {timedOut.After}");
-
-                case HtspResult.Failed failed:
-                    throw new InvalidOperationException($"{operation} failed: '{failed.Reason}'");
+                case HtspError.Cancelled:
+                    throw new OperationCanceledException($"{operation}: {result.Error.Describe()}");
 
                 default:
-                    throw new InvalidOperationException($"{operation} failed: unhandled result {result}");
+                    throw new InvalidOperationException($"{operation} failed: {result.Error.Describe()}");
             }
         }
 
@@ -647,26 +649,4 @@ namespace TVHeadEnd
         }
     }
 
-    /// <summary>
-    /// Outcome of an HTSP round trip. The private constructor closes the hierarchy, so the cases
-    /// nested below are the only ones that can exist.
-    /// </summary>
-    public abstract record HtspResult
-    {
-        private HtspResult()
-        {
-        }
-
-        /// <summary>The server acknowledged the request.</summary>
-        public sealed record Ok(HTSMessage Response) : HtspResult;
-
-        /// <summary>The entry the request referred to does not exist on the server.</summary>
-        public sealed record NotFound : HtspResult;
-
-        /// <summary>The server refused the request and gave a reason.</summary>
-        public sealed record Failed(string Reason) : HtspResult;
-
-        /// <summary>No response arrived in time.</summary>
-        public sealed record TimedOut(TimeSpan After) : HtspResult;
-    }
 }
