@@ -1,7 +1,3 @@
-// TODO: not yet reviewed for nullability. Remove this line and fix the warnings when
-// touching this file; the project as a whole has nullable reference types enabled.
-#nullable disable
-
 using System;
 using System.Collections.Generic;
 using MediaBrowser.Common.Configuration;
@@ -73,7 +69,11 @@ namespace TVHeadEnd
         /// Gets the instance.
         /// </summary>
         /// <value>The instance.</value>
-        public static Plugin Instance { get; private set; }
+        /// <remarks>
+        /// Jellyfin constructs the plugin during startup, before any of our types can run, so
+        /// this is never null in practice. There is no earlier point at which to observe it.
+        /// </remarks>
+        public static Plugin Instance { get; private set; } = null!;
     }
 
 }

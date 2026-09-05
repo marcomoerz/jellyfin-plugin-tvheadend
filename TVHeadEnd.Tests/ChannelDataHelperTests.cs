@@ -54,12 +54,12 @@ public class ChannelDataHelperTests
     [InlineData("FHDTV", ChannelType.TV)]
     [InlineData("UHDTV", ChannelType.TV)]
     [InlineData("Radio", ChannelType.Radio)]
-    public void ServiceType_DecidesTheChannelType(string serviceType, ChannelType expected)
+    public async Task ServiceType_DecidesTheChannelType(string serviceType, ChannelType expected)
     {
         ChannelDataHelper helper = CreateHelper();
         helper.Add(Channel(1, serviceType: serviceType));
 
-        ChannelInfo channel = ChannelsOf(helper).GetAwaiter().GetResult().Single();
+        ChannelInfo channel = Assert.Single(await ChannelsOf(helper));
 
         Assert.Equal(expected, channel.ChannelType);
     }

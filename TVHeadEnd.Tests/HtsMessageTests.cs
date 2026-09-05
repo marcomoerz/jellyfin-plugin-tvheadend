@@ -10,8 +10,12 @@ namespace TVHeadEnd.Tests;
 /// </summary>
 public class HtsMessageTests
 {
-    private static HTSMessage RoundTrip(HTSMessage message) =>
-        HTSMessage.parse(message.BuildBytes(), NullLogger<HTSMessage>.Instance);
+    private static HTSMessage RoundTrip(HTSMessage message)
+    {
+        HTSMessage? parsed = HTSMessage.parse(message.BuildBytes(), NullLogger<HTSMessage>.Instance);
+        Assert.NotNull(parsed);
+        return parsed;
+    }
 
     [Fact]
     public void Strings_SurviveTheRoundTrip()

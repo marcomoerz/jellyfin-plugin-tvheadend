@@ -1,7 +1,3 @@
-// TODO: not yet reviewed for nullability. Remove this line and fix the warnings when
-// touching this file; the project as a whole has nullable reference types enabled.
-#nullable disable
-
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -84,13 +80,13 @@ namespace TVHeadEnd.DataHelper
             }
         }
 
-        public string GetChannelIcon4ChannelId(string channelId)
+        public string? GetChannelIcon4ChannelId(string channelId)
         {
             // Same lock as the writer in BuildChannelInfos: an unsynchronised read of a
             // Dictionary that another thread is writing can spin forever inside the lookup.
             lock (_data)
             {
-                return _piconData.TryGetValue(channelId, out string result) ? result : null;
+                return _piconData.TryGetValue(channelId, out string? result) ? result : null;
             }
         }
 
@@ -121,7 +117,7 @@ namespace TVHeadEnd.DataHelper
                             if (m.containsField("channelIcon"))
                             {
                                 string channelIcon = m.getString("channelIcon");
-                                Uri uriResult;
+                                Uri? uriResult;
                                 bool uriCheckResult = Uri.TryCreate(channelIcon, UriKind.Absolute, out uriResult) && uriResult.Scheme == Uri.UriSchemeHttp;
                                 if (uriCheckResult)
                                 {
@@ -163,8 +159,10 @@ namespace TVHeadEnd.DataHelper
                                 IList tunerInfoList = m.getList("services");
                                 if (tunerInfoList != null && tunerInfoList.Count > 0)
                                 {
-                                    HTSMessage firstServiceInList = (HTSMessage)tunerInfoList[0];
-                                    if (firstServiceInList.containsField("type"))
+                                    // The list holds untyped entries; anything that is not a
+                                    // message is not a service description we can read.
+                                    if (tunerInfoList[0] is HTSMessage firstServiceInList
+                                        && firstServiceInList.containsField("type"))
                                     {
                                         string type = firstServiceInList.getString("type").ToLower();
                                         switch (type)

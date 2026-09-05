@@ -1,7 +1,3 @@
-// TODO: not yet reviewed for nullability. Remove this line and fix the warnings when
-// touching this file; the project as a whole has nullable reference types enabled.
-#nullable disable
-
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -80,7 +76,7 @@ namespace TVHeadEnd
             get { return ChannelParentalRating.GeneralAudience; }
         }
 
-        public string GetCacheKey(string userId)
+        public string GetCacheKey(string? userId)
         {
             var now = DateTime.UtcNow;
 
@@ -150,9 +146,19 @@ namespace TVHeadEnd
             return !Plugin.Instance.Configuration.HideRecordingsChannel;
         }
 
-        private LiveTvService GetService()
+        private LiveTvService? GetService()
         {
             return _htsConnectionHandler.getLiveTvService();
+        }
+
+        /// <summary>
+        /// The service is created lazily by dependency injection, so a caller that needs it has
+        /// to say so rather than dereference a null.
+        /// </summary>
+        private LiveTvService RequireService()
+        {
+            return GetService()
+                ?? throw new InvalidOperationException("the TVHeadend live TV service is not available yet");
         }
 
         private Task<bool> WaitForInitialLoadTask(CancellationToken cancellationToken)
@@ -191,7 +197,7 @@ namespace TVHeadEnd
 
         public Task DeleteItem(string id, CancellationToken cancellationToken)
         {
-            return GetService().DeleteRecordingAsync(id, cancellationToken);
+            return RequireService().DeleteRecordingAsync(id, cancellationToken);
         }
 
         public async Task<IEnumerable<ChannelItemInfo>> GetLatestMedia(ChannelLatestMediaSearch request, CancellationToken cancellationToken)
@@ -211,7 +217,11 @@ namespace TVHeadEnd
             if (query.FolderId.StartsWith("series_", StringComparison.OrdinalIgnoreCase))
             {
                 var hash = query.FolderId.Split('_')[1];
-                return GetChannelItems(query, i => i.IsSeries && string.Equals(i.Name.GetMD5().ToString("N"), hash, StringComparison.Ordinal), cancellationToken);
+                return GetChannelItems(
+                    query,
+                    i => i.IsSeries && i.Name is not null
+                        && string.Equals(i.Name.GetMD5().ToString("N"), hash, StringComparison.Ordinal),
+                    cancellationToken);
             }
 
             if (string.Equals(query.FolderId, "kids", StringComparison.OrdinalIgnoreCase))
@@ -331,9 +341,11 @@ namespace TVHeadEnd
             var result = new ChannelItemResult();
             var items = new List<ChannelItemInfo>();
 
+            // A series folder is named after the series, so an entry without a name cannot
+            // become one.
             var series = allRecordings
-                .Where(i => i.IsSeries)
-                .ToLookup(i => i.Name, StringComparer.OrdinalIgnoreCase);
+                .Where(i => i.IsSeries && i.Name is not null)
+                .ToLookup(i => i.Name!, StringComparer.OrdinalIgnoreCase);
 
             items.AddRange(series.OrderBy(i => i.Key).Select(i => new ChannelItemInfo
             {
@@ -419,24 +431,24 @@ namespace TVHeadEnd
         /// <summary>
         /// Id of the recording.
         /// </summary>
-        public string Id { get; set; }
+        public string Id { get; set; } = string.Empty;
 
         /// <summary>
         /// Gets or sets the series timer identifier.
         /// </summary>
         /// <value>The series timer identifier.</value>
-        public string SeriesTimerId { get; set; }
+        public string? SeriesTimerId { get; set; }
 
         /// <summary>
         /// Gets or sets the timer identifier.
         /// </summary>
         /// <value>The timer identifier.</value>
-        public string TimerId { get; set; }
+        public string? TimerId { get; set; }
 
         /// <summary>
         /// ChannelId of the recording.
         /// </summary>
-        public string ChannelId { get; set; }
+        public string? ChannelId { get; set; }
 
         /// <summary>
         /// Gets or sets the type of the channel.
@@ -447,25 +459,25 @@ namespace TVHeadEnd
         /// <summary>
         /// Name of the recording.
         /// </summary>
-        public string Name { get; set; }
+        public string? Name { get; set; }
 
         /// <summary>
         /// Gets or sets the path.
         /// </summary>
         /// <value>The path.</value>
-        public string Path { get; set; }
+        public string? Path { get; set; }
 
         /// <summary>
         /// Gets or sets the URL.
         /// </summary>
         /// <value>The URL.</value>
-        public string Url { get; set; }
+        public string? Url { get; set; }
 
         /// <summary>
         /// Gets or sets the overview.
         /// </summary>
         /// <value>The overview.</value>
-        public string Overview { get; set; }
+        public string? Overview { get; set; }
 
         /// <summary>
         /// The start date of the recording, in UTC.
@@ -481,7 +493,7 @@ namespace TVHeadEnd
         /// Gets or sets the program identifier.
         /// </summary>
         /// <value>The program identifier.</value>
-        public string ProgramId { get; set; }
+        public string? ProgramId { get; set; }
 
         /// <summary>
         /// Gets or sets the status.
@@ -504,7 +516,7 @@ namespace TVHeadEnd
         /// Gets or sets the episode title.
         /// </summary>
         /// <value>The episode title.</value>
-        public string EpisodeTitle { get; set; }
+        public string? EpisodeTitle { get; set; }
 
         /// <summary>
         /// Gets or sets a value indicating whether this instance is hd.
@@ -570,7 +582,7 @@ namespace TVHeadEnd
         /// Gets or sets the official rating.
         /// </summary>
         /// <value>The official rating.</value>
-        public string OfficialRating { get; set; }
+        public string? OfficialRating { get; set; }
 
         /// <summary>
         /// Gets or sets the community rating.
@@ -582,13 +594,13 @@ namespace TVHeadEnd
         /// Supply the image path if it can be accessed directly from the file system
         /// </summary>
         /// <value>The image path.</value>
-        public string ImagePath { get; set; }
+        public string? ImagePath { get; set; }
 
         /// <summary>
         /// Supply the image url if it can be downloaded
         /// </summary>
         /// <value>The image URL.</value>
-        public string ImageUrl { get; set; }
+        public string? ImageUrl { get; set; }
 
         /// <summary>
         /// Gets or sets a value indicating whether this instance has image.
@@ -599,7 +611,7 @@ namespace TVHeadEnd
         /// Gets or sets the show identifier.
         /// </summary>
         /// <value>The show identifier.</value>
-        public string ShowId { get; set; }
+        public string? ShowId { get; set; }
 
         /// <summary>
         /// Gets or sets the date last updated.

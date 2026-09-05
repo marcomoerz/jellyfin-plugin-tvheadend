@@ -328,7 +328,7 @@ namespace TVHeadEnd.HTSP
                     Array.Copy(lengthPrefix, frame, 4);
                     await stream.ReadExactlyAsync(frame.AsMemory(4, (int)payloadLength), cancellationToken).ConfigureAwait(false);
 
-                    HTSMessage message = HTSMessage.parse(frame, _messageLogger);
+                    HTSMessage? message = HTSMessage.parse(frame, _messageLogger);
                     if (message != null)
                     {
                         await _incoming.Writer.WriteAsync(message, cancellationToken).ConfigureAwait(false);

@@ -14,8 +14,13 @@ namespace TVHeadEnd.Tests;
 internal static class HtspMessageFactory
 {
     /// <summary>Serialises and parses a message, so it carries wire types.</summary>
-    public static HTSMessage Wire(HTSMessage message) =>
-        HTSMessage.parse(message.BuildBytes(), NullLogger<HTSMessage>.Instance);
+    public static HTSMessage Wire(HTSMessage message)
+    {
+        // A message this test built must always parse back; a null here is a defect in the
+        // serialiser, not an expected outcome.
+        return HTSMessage.parse(message.BuildBytes(), NullLogger<HTSMessage>.Instance)
+            ?? throw new InvalidOperationException("the message did not survive serialisation");
+    }
 
     /// <summary>Builds a DVR entry as TVHeadend would send it.</summary>
     public static HTSMessage DvrEntry(
