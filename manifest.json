@@ -8,6 +8,14 @@
     "imageUrl":  "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png",
     "versions":  [
                      {
+                         "version":  "17.0.0.0",
+                         "changelog":  "Record a series: create and change a recurring recording from Jellyfin, as a TVHeadend autorec entry. Record it on the channel it was picked from rather than every channel carrying that title. Editing a series recording no longer deletes it. New recordings use the configured priority instead of silently running at the highest, and pre/post padding is the right way round again. Credentials in playback URLs are percent encoded, so passwords containing @ : / or # work. A live channel is now described the same way on every playback, not only the first.",
+                         "targetAbi":  "10.11.0.0",
+                         "sourceUrl":  "https://github.com/marcomoerz/jellyfin-plugin-tvheadend/releases/download/v17.0.0.0/tvheadend_17.0.0.0.zip",
+                         "checksum":  "be9aa0b595198774d938b483cdd03184",
+                         "timestamp":  "2026-09-05T18:53:35Z"
+                     },
+                     {
                          "version":  "16.0.0.0",
                          "changelog":  "Keep the length of a running recording up to date, so reopening it offers what has been recorded since",
                          "targetAbi":  "10.11.0.0",
