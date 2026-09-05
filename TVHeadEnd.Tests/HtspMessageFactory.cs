@@ -32,7 +32,8 @@ internal static class HtspMessageFactory
         string? autorecId = null,
         string? error = null,
         string? description = null,
-        string? subtitle = null)
+        string? subtitle = null,
+        List<object>? files = null)
     {
         DateTime start = new DateTime(2026, 9, 4, 20, 15, 0, DateTimeKind.Utc);
 
@@ -73,7 +74,62 @@ internal static class HtspMessageFactory
             message.putField("subtitle", subtitle);
         }
 
+        if (files is not null)
+        {
+            message.putField("files", files);
+        }
+
         return Wire(message);
+    }
+
+    /// <summary>
+    /// Builds the "files" list TVHeadend attaches to a finished recording, as assembled in
+    /// dvr_rec.c: one entry per file, each with the stream descriptions and the size.
+    /// </summary>
+    public static List<object> RecordedFiles(
+        long sizeBytes,
+        long startUnix,
+        long stopUnix,
+        params Dictionary<string, object>[] streams)
+    {
+        Dictionary<string, object> file = new()
+        {
+            ["filename"] = "/recordings/example.ts",
+            ["size"] = sizeBytes,
+            ["start"] = startUnix,
+            ["stop"] = stopUnix,
+        };
+
+        if (0 < streams.Length)
+        {
+            file["info"] = streams.Cast<object>().ToList();
+        }
+
+        return new List<object> { file };
+    }
+
+    /// <summary>One entry of the per file stream list.</summary>
+    public static Dictionary<string, object> RecordedStream(
+        string type, string? language = null, int? width = null, int? height = null)
+    {
+        Dictionary<string, object> stream = new() { ["type"] = type };
+
+        if (language is not null)
+        {
+            stream["language"] = language;
+        }
+
+        if (width.HasValue)
+        {
+            stream["width"] = width.Value;
+        }
+
+        if (height.HasValue)
+        {
+            stream["height"] = height.Value;
+        }
+
+        return stream;
     }
 
     private static long ToUnix(DateTime utc) =>

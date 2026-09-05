@@ -69,6 +69,9 @@ namespace TVHeadEnd
 
         private Dictionary<string, string> _headers = new Dictionary<string, string>();
 
+        /// <summary>Message kinds whose full contents have already been written to the log.</summary>
+        private readonly HashSet<string> _dumpedMessageKinds = new HashSet<string>(StringComparer.Ordinal);
+
         public HTSConnectionHandler(ILoggerFactory loggerFactory, IHttpClientFactory httpClientFactory)
         {
             _loggerFactory = loggerFactory;
@@ -291,6 +294,13 @@ namespace TVHeadEnd
                 _dvrDataHelper.clean();
                 _autorecDataHelper.clean();
 
+                // A different server, or the same one after an upgrade, may send different
+                // fields — so dump the first of each kind again.
+                lock (_dumpedMessageKinds)
+                {
+                    _dumpedMessageKinds.Clear();
+                }
+
                 _logger.LogDebug("[TVHclient] HTSConnectionHandler: connecting to " +
                     "TVH Server = '{servername}'; HTTP Port = '{httpport}'; HTSP Port = '{htspport}'; Web-Root = '{webroot}'; " +
                     "User = '{user}'; Password set = '{passexists}'",
@@ -410,10 +420,59 @@ namespace TVHeadEnd
             _logger.LogError(ex, "[TVHclient] HTSConnectionHandler: HTSP connection lost, reconnecting on next use");
         }
 
+        /// <summary>
+        /// Writes the complete message the first time each kind arrives.
+        /// </summary>
+        /// <remarks>
+        /// Which fields a TVHeadend build sends varies by version, and the plugin reads only the
+        /// ones it knows about. One dump per kind shows what is actually on offer — for instance
+        /// whether stream and codec details are included — without flooding the log.
+        /// </remarks>
+        private void DumpFirstOfKind(HTSMessage message)
+        {
+            if (!_logger.IsEnabled(LogLevel.Debug))
+            {
+                return;
+            }
+
+            string kind = message.Method ?? "(no method)";
+
+            lock (_dumpedMessageKinds)
+            {
+                if (!_dumpedMessageKinds.Add(kind))
+                {
+                    return;
+                }
+            }
+
+            _logger.LogDebug(
+                "[TVHclient] first '{kind}' message from TVHeadend, complete contents: {dump}",
+                kind, message.ToString());
+        }
+
+        /// <summary>
+        /// Invalidates the cached recordings listing.
+        /// </summary>
+        /// <remarks>
+        /// Jellyfin caches the channel listing and only refetches when the cache key changes, and
+        /// the key is built from this timestamp. A running recording grows with every update, so
+        /// without this its length would stay frozen at whatever was cached.
+        /// </remarks>
+        private void NotifyRecordingsChanged()
+        {
+            LiveTvService? service = _liveTvService;
+            if (null != service)
+            {
+                service._lastRecordingChange = DateTime.UtcNow;
+            }
+        }
+
         public void onMessage(HTSMessage response)
         {
             if (response != null)
             {
+                DumpFirstOfKind(response);
+
                 switch (response.Method)
                 {
                     case "tagAdd":
@@ -429,12 +488,15 @@ namespace TVHeadEnd
 
                     case "dvrEntryAdd":
                         _dvrDataHelper.dvrEntryAdd(response);
+                        NotifyRecordingsChanged();
                         break;
                     case "dvrEntryUpdate":
                         _dvrDataHelper.dvrEntryUpdate(response);
+                        NotifyRecordingsChanged();
                         break;
                     case "dvrEntryDelete":
                         _dvrDataHelper.dvrEntryDelete(response);
+                        NotifyRecordingsChanged();
                         break;
 
                     case "autorecEntryAdd":
