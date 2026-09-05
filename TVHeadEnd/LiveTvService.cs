@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.LiveTv;
@@ -249,6 +248,14 @@ namespace TVHeadEnd
                     SupportsDirectStream = false,
                     SupportsProbing = false,
                     Container = "mpegts",
+
+                    // Jellyfin only hands out an open token, and so only asks for a fresh
+                    // playback ticket, when the source says it has to be opened. Without this
+                    // the client replays whatever ticket was in the listing.
+                    RequiresOpening = true,
+                    RequiresClosing = true,
+                    IsInfiniteStream = true,
+
                     MediaStreams = new List<MediaStream>
                     {
                         new MediaStream
@@ -322,6 +329,20 @@ namespace TVHeadEnd
             }
         }
 
+        /// <summary>
+        /// Forgets what was measured about the channels.
+        /// </summary>
+        /// <remarks>
+        /// Called when the configuration changes or the connection is rebuilt: a different
+        /// server, streaming profile or transcoding setting can change what a channel delivers,
+        /// and a description that no longer fits is worse than none.
+        /// </remarks>
+        public void ForgetChannelDescriptions()
+        {
+            _logger.LogDebug("LiveTvService: forgetting the remembered channel descriptions");
+            _channelStreamProfiles.Clear();
+        }
+
         private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, string probeUrl, string source, CancellationToken cancellationToken)
         {
             _logger.LogInformation("Probe stream for {source}", source);
@@ -372,20 +393,10 @@ namespace TVHeadEnd
                 mediaSourceInfo.VideoType = info.VideoType;
                 _logger.LogDebug("        VideoType:                  {VideoType}", info.VideoType);
 
-                mediaSourceInfo.RequiresClosing = true;
-                _logger.LogDebug("        RequiresClosing:            {RequiresClosing}", info.RequiresClosing);
-
-                mediaSourceInfo.RequiresOpening = true;
-                _logger.LogDebug("        RequiresOpening:            {RequiresOpening}", info.RequiresOpening);
-
-                mediaSourceInfo.SupportsDirectPlay = true;
-                _logger.LogDebug("        SupportsDirectPlay:         {SupportsDirectPlay}", info.SupportsDirectPlay);
-
-                mediaSourceInfo.SupportsDirectStream = true;
-                _logger.LogDebug("        SupportsDirectStream:       {SupportsDirectStream}", info.SupportsDirectStream);
-
-                mediaSourceInfo.SupportsTranscoding = true;
-                _logger.LogDebug("        SupportsTranscoding:        {SupportsTranscoding}", info.SupportsTranscoding);
+                // How the stream is delivered is the caller's decision, not the probe's.
+                // Overwriting it here made the first playback of a channel behave differently
+                // from every later one, because a remembered description does not come through
+                // this method at all.
 
                 mediaSourceInfo.DefaultSubtitleStreamIndex = null;
                 _logger.LogDebug("        DefaultSubtitleStreamIndex: n/a");
@@ -471,8 +482,8 @@ namespace TVHeadEnd
             {
                 return new SeriesTimerInfo
                 {
-                    PostPaddingSeconds = Plugin.Instance.Configuration.Pre_Padding,
-                    PrePaddingSeconds = Plugin.Instance.Configuration.Post_Padding,
+                    PrePaddingSeconds = Plugin.Instance.Configuration.Pre_Padding,
+                    PostPaddingSeconds = Plugin.Instance.Configuration.Post_Padding,
                     RecordAnyChannel = true,
                     RecordAnyTime = true,
                     RecordNewOnly = false
@@ -562,12 +573,20 @@ namespace TVHeadEnd
             throw new NotImplementedException();
         }
 
-        public async Task UpdateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
+        /// <summary>
+        /// Changing a series recording is not supported yet.
+        /// </summary>
+        /// <remarks>
+        /// This used to remove the autorec entry and stop there, because recreating it needs
+        /// <see cref="CreateSeriesTimerAsync"/>, which does not exist yet. Jellyfin reported the
+        /// change as saved and the series recording was gone. Refusing loudly loses nothing;
+        /// pretending to succeed lost the recording.
+        /// </remarks>
+        public Task UpdateSeriesTimerAsync(SeriesTimerInfo info, CancellationToken cancellationToken)
         {
-            await CancelSeriesTimerAsync(info.Id, cancellationToken);
-            _lastRecordingChange = DateTime.UtcNow;
-            // TODO add if method is implemented
-            // await CreateSeriesTimerAsync(info, cancellationToken);
+            throw new NotSupportedException(
+                "Changing a series recording is not supported by this plugin yet. "
+                + "Delete it and create a new one, or change it in TVHeadend directly.");
         }
 
         public async Task UpdateTimerAsync(TimerInfo info, CancellationToken cancellationToken)
@@ -684,21 +703,6 @@ namespace TVHeadEnd
                 default:
                     throw new InvalidOperationException($"{operation} failed: {result.Error.Describe()}");
             }
-        }
-
-        private static string Dump(List<DayOfWeek> days)
-        {
-            StringBuilder sb = new StringBuilder();
-            foreach (DayOfWeek dow in days)
-            {
-                sb.Append(dow + ", ");
-            }
-            string tmpResult = sb.ToString();
-            if (tmpResult.EndsWith(','))
-            {
-                tmpResult = tmpResult[..^2];
-            }
-            return tmpResult;
         }
     }
 
