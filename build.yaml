@@ -1,7 +1,7 @@
 name: "TVHeadend"
 guid: "3fd018e5-5e78-4e58-b280-a0c068febee0"
 imageUrl: "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png"
-version: 17
+version: 18
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 owner: "jellyfin"
@@ -11,6 +11,10 @@ category: "LiveTV"
 artifacts:
   - "TVHeadEnd.dll"
 changelog: |-
+  - Recognise a programme as part of a series from the series link or the episode numbering, not only from the episode title, so Jellyfin offers "record series" for far more of the guide
+  - Read the series identity from serieslinkUri; the plugin looked for a serieslinkId that TVHeadend has never sent
+  - Recover the season and episode from a guide that writes "S4 E3" into its text instead of filling the fields, and take that line off the description
+  - Show the summary as the overview when the guide fills no description
   - Record a series: create and change a recurring recording from Jellyfin, as a TVHeadend autorec entry
   - Record a series on the channel it was picked from, instead of on every channel carrying that title
   - Stop editing a series recording from deleting it without recreating it

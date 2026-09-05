@@ -103,28 +103,31 @@ namespace TVHeadEnd.HTSP_Responses
                         pi.Id = "" + currEventMessage.getInt("eventId");
                     }
 
-                    if (currEventMessage.containsField("serieslinkId"))
+                    // The series link is a URI, and it is what TVHeadend itself uses to tie
+                    // episodes together. The plugin used to look for a numeric "serieslinkId",
+                    // which TVHeadend has never sent under any protocol version, so the series
+                    // identity was always empty.
+                    if (currEventMessage.containsField("serieslinkUri"))
                     {
-                        pi.SeriesId = "" + currEventMessage.getInt("serieslinkId");
+                        pi.SeriesId = currEventMessage.getString("serieslinkUri");
                     }
 
                     if (currEventMessage.containsField("episodeNumber"))
                     {
                         pi.EpisodeNumber = currEventMessage.getInt("episodeNumber");
                     }
-                    else if (currEventMessage.containsField("episodeId"))
-                    {
-                        pi.EpisodeNumber = currEventMessage.getInt("episodeId");
-                    }
 
                     if (currEventMessage.containsField("seasonNumber"))
                     {
                         pi.SeasonNumber = currEventMessage.getInt("seasonNumber");
                     }
-                    else if (currEventMessage.containsField("seasonId"))
-                    {
-                        pi.SeasonNumber = currEventMessage.getInt("seasonId");
-                    }
+
+                    // The numbering as the broadcaster writes it, for instance "S4 E3". Guides
+                    // that carry no separate numbers still fill this, so it is the last hint
+                    // that the programme is an episode of something.
+                    bool hasOnScreenNumbering =
+                        currEventMessage.containsField("episodeOnscreen")
+                        && !string.IsNullOrEmpty(currEventMessage.getString("episodeOnscreen"));
 
                     if (currEventMessage.containsField("title"))
                     {
@@ -135,12 +138,28 @@ namespace TVHeadEnd.HTSP_Responses
                     {
                         pi.Overview = currEventMessage.getString("description");
                     }
+                    else if (currEventMessage.containsField("summary"))
+                    {
+                        pi.Overview = currEventMessage.getString("summary");
+                    }
 
                     if (currEventMessage.containsField("subtitle"))
                     {
                         pi.EpisodeTitle = currEventMessage.getString("subtitle");
-                        pi.IsSeries = true;
                     }
+
+                    ReadEpisodeFromText(currEventMessage, pi);
+
+                    // Jellyfin only offers "record series" when this is set, so every sign
+                    // TVHeadend gives has to count. Going by the episode title alone missed
+                    // every guide that writes it into the description instead of into its own
+                    // field, and those guides are common.
+                    pi.IsSeries =
+                        !string.IsNullOrEmpty(pi.EpisodeTitle)
+                        || !string.IsNullOrEmpty(pi.SeriesId)
+                        || pi.EpisodeNumber.HasValue
+                        || pi.SeasonNumber.HasValue
+                        || hasOnScreenNumbering;
 
                     if (currEventMessage.containsField("firstAired"))
                     {
@@ -718,7 +737,6 @@ namespace TVHeadEnd.HTSP_Responses
                         pi.Genres = genres;
                     }
 
-                    //pi.IsSeries - bool
                     //pi.CommunityRating  - float
                     //pi.IsHD - bool
                     //pi.IsPremiere - bool
@@ -735,6 +753,57 @@ namespace TVHeadEnd.HTSP_Responses
             return _result;
         }
 
+        /// <summary>
+        /// Recovers the episode from the text when the guide filled no field for it.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Only reached when TVHeadend passed on nothing structured. The texts are tried in the
+        /// order TVHeadend's own interface uses for its "extra text" column — subtitle, then
+        /// summary, then description — so what is read here is what a user sees there.
+        /// </para>
+        /// <para>
+        /// The label is taken off the overview afterwards. Jellyfin shows the season, episode
+        /// and title in their own right, and leaving the line in would print all of it twice.
+        /// </para>
+        /// </remarks>
+        private void ReadEpisodeFromText(HTSMessage message, ProgramInfo pi)
+        {
+            if (pi.SeasonNumber.HasValue || pi.EpisodeNumber.HasValue)
+            {
+                return;
+            }
+
+            foreach (string field in new[] { "subtitle", "summary", "description" })
+            {
+                if (!message.containsField(field)
+                    || !EpisodeLabelReader.TryRead(message.getString(field), out EpisodeLabel label))
+                {
+                    continue;
+                }
+
+                pi.SeasonNumber = label.Season;
+                pi.EpisodeNumber = label.Episode;
+
+                if (string.IsNullOrEmpty(pi.EpisodeTitle) && null != label.Title)
+                {
+                    pi.EpisodeTitle = label.Title;
+                }
+
+                if (pi.Overview == message.getString(field))
+                {
+                    pi.Overview = label.Rest;
+                }
+
+                _logger.LogDebug(
+                    "[TVHclient] GetEventsResponseHandler: read S{season} E{episode} out of the "
+                    + "'{field}' of '{title}', because TVHeadend carried no episode fields",
+                    label.Season, label.Episode, field, pi.Name);
+
+                return;
+            }
+        }
+
         private String createPiInfo(ProgramInfo pi)
         {
             StringBuilder sb = new StringBuilder();
@@ -746,6 +815,10 @@ namespace TVHeadEnd.HTSP_Responses
             sb.Append("  Name:                  " + pi.Name + "\n");
             sb.Append("  Overview:              " + pi.Overview + "\n");
             sb.Append("  EpisodeTitle:          " + pi.EpisodeTitle + "\n");
+            sb.Append("  SeriesId:              " + pi.SeriesId + "\n");
+            sb.Append("  SeasonNumber:          " + pi.SeasonNumber + "\n");
+            sb.Append("  EpisodeNumber:         " + pi.EpisodeNumber + "\n");
+            sb.Append("  IsSeries:              " + pi.IsSeries + "\n");
             sb.Append("  OriginalAirDate:       " + pi.OriginalAirDate + "\n");
             sb.Append("  OfficialRating:        " + pi.OfficialRating + "\n");
             sb.Append("  HasImage:              " + pi.HasImage + "\n");

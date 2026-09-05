@@ -8,6 +8,14 @@
     "imageUrl":  "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png",
     "versions":  [
                      {
+                         "version":  "18.0.0.0",
+                         "changelog":  "Offer \"record series\" for guides that fill no episode fields. The series is now recognised from the series link (read from serieslinkUri, which the plugin never looked at) or the episode numbering, and where a guide writes \"S4 E3 - Titel\" into its text instead, the season, episode and title are recovered from there and the line is taken off the description. A summary is shown as the overview when there is no description.",
+                         "targetAbi":  "10.11.0.0",
+                         "sourceUrl":  "https://github.com/marcomoerz/jellyfin-plugin-tvheadend/releases/download/v18.0.0.0/tvheadend_18.0.0.0.zip",
+                         "checksum":  "0674e5a4021925d5022622ad2d829a13",
+                         "timestamp":  "2026-09-05T19:32:23Z"
+                     },
+                     {
                          "version":  "17.0.0.0",
                          "changelog":  "Record a series: create and change a recurring recording from Jellyfin, as a TVHeadend autorec entry. Record it on the channel it was picked from rather than every channel carrying that title. Editing a series recording no longer deletes it. New recordings use the configured priority instead of silently running at the highest, and pre/post padding is the right way round again. Credentials in playback URLs are percent encoded, so passwords containing @ : / or # work. A live channel is now described the same way on every playback, not only the first.",
                          "targetAbi":  "10.11.0.0",
