@@ -314,12 +314,37 @@ namespace TVHeadEnd.DataHelper
                          */
 
                         ReadRecordedFile(m, ri);
+                        StampLastUpdate(ri);
 
                         result.Add(ri);
                     }
                     return result;
                 }
             });
+        }
+
+        /// <summary>
+        /// Records how far the recording has been written.
+        /// </summary>
+        /// <remarks>
+        /// Jellyfin stores the media source of a channel item once and only rewrites it when the
+        /// item reports a newer modification date. A running recording therefore has to report a
+        /// date that moves, or the length measured when it was first seen is the length a viewer
+        /// stays stuck with, however much has been recorded since. The end of what exists is
+        /// exactly such a date: it advances while the recording runs and stops once it is done.
+        /// </remarks>
+        private static void StampLastUpdate(MyRecordingInfo recording)
+        {
+            if (recording.RecordedDuration.HasValue && default(DateTime) != recording.StartDate)
+            {
+                recording.DateLastUpdated = recording.StartDate + recording.RecordedDuration.Value;
+                return;
+            }
+
+            // Nothing measurable. A stable date still beats none: it gets the recording written
+            // out once instead of leaving it looking older than anything already stored.
+            recording.DateLastUpdated =
+                default(DateTime) == recording.EndDate ? recording.StartDate : recording.EndDate;
         }
 
         /// <summary>

@@ -316,6 +316,14 @@ namespace TVHeadEnd
                 //ProductionYear = item.ProductionYear,
                 //Studios = item.Studios,
                 Type = ChannelItemType.Media,
+
+                // How much of the recording exists. Jellyfin shows it as the length of the item
+                // and falls back to it wherever the media source does not say.
+                RunTimeTicks = item.RecordedDuration?.Ticks,
+
+                // How far it has been written. Jellyfin keeps the stored media source until this
+                // moves, so a running recording stays as long as it was when first seen unless
+                // this advances with it.
                 DateModified = item.DateLastUpdated,
                 Overview = item.Overview,
                 //People = item.People

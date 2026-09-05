@@ -174,6 +174,65 @@ public class RunningRecordingTests
     }
 
     /// <summary>
+    /// Jellyfin keeps the media source it stored for an item until the item claims a newer
+    /// modification date. While a recording runs that date has to advance, or reopening the
+    /// recording an hour later still offers the ten minutes that existed when it was first seen.
+    /// </summary>
+    [Fact]
+    public async Task LastUpdate_AdvancesWhileRecording()
+    {
+        HTSP.HTSMessage entry = RunningEntry(RecordingStart.AddMinutes(90), 100_000_000);
+
+        DvrDataHelper early = HelperAt(RecordingStart.AddMinutes(10));
+        early.dvrEntryAdd(entry);
+
+        DvrDataHelper later = HelperAt(RecordingStart.AddMinutes(40));
+        later.dvrEntryAdd(entry);
+
+        DateTime first = (await SingleRecording(early)).DateLastUpdated;
+        DateTime second = (await SingleRecording(later)).DateLastUpdated;
+
+        Assert.Equal(RecordingStart.AddMinutes(10), first);
+        Assert.True(second > first, "the recording has grown, so it has to look newer");
+    }
+
+    /// <summary>
+    /// Once it is finished the date has to settle, or every refresh would rewrite an item that
+    /// has not changed.
+    /// </summary>
+    [Fact]
+    public async Task LastUpdate_SettlesOnceTheRecordingIsDone()
+    {
+        List<object> files = HtspMessageFactory.RecordedFiles(
+            sizeBytes: 75_000_000,
+            startUnix: ToUnix(RecordingStart),
+            stopUnix: ToUnix(RecordingStart.AddMinutes(10)));
+
+        DvrDataHelper soonAfter = HelperAt(RecordingStart.AddMinutes(11));
+        soonAfter.dvrEntryAdd(HtspMessageFactory.DvrEntry(1, "completed", files: files));
+
+        DvrDataHelper muchLater = HelperAt(RecordingStart.AddDays(3));
+        muchLater.dvrEntryAdd(HtspMessageFactory.DvrEntry(1, "completed", files: files));
+
+        Assert.Equal(
+            (await SingleRecording(soonAfter)).DateLastUpdated,
+            (await SingleRecording(muchLater)).DateLastUpdated);
+    }
+
+    /// <summary>
+    /// A recording TVHeadend tells us nothing about still has to be written out once, so it needs
+    /// a date of its own rather than the year zero.
+    /// </summary>
+    [Fact]
+    public async Task RecordingWithoutFileDetails_StillReportsADate()
+    {
+        DvrDataHelper helper = HelperAt(RecordingStart.AddHours(5));
+        helper.dvrEntryAdd(HtspMessageFactory.DvrEntry(1, "completed"));
+
+        Assert.NotEqual(default, (await SingleRecording(helper)).DateLastUpdated);
+    }
+
+    /// <summary>
     /// Once the muxer closes, the file carries its own stop time and the clock stops mattering.
     /// </summary>
     [Fact]
