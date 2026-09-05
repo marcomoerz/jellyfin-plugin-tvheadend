@@ -1,7 +1,7 @@
 name: "TVHeadend"
 guid: "3fd018e5-5e78-4e58-b280-a0c068febee0"
 imageUrl: "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png"
-version: 16
+version: 17
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 owner: "jellyfin"
@@ -11,6 +11,15 @@ category: "LiveTV"
 artifacts:
   - "TVHeadEnd.dll"
 changelog: |-
+  - Record a series: create and change a recurring recording from Jellyfin, as a TVHeadend autorec entry
+  - Record a series on the channel it was picked from, instead of on every channel carrying that title
+  - Stop editing a series recording from deleting it without recreating it
+  - Use the configured recording priority for new recordings, which silently ran at the highest one
+  - Swap pre and post padding back the right way round for new recordings
+  - Percent encode the TVHeadend credentials in playback URLs, so a password containing @ : / or # works
+  - Describe a live channel the same way on every playback, not only on the first after a restart
+  - Forget what was measured about the channels when the configuration or the connection changes
+  - Skip an update for a recording that is not known instead of failing on it
   - Keep the length of a running recording up to date, so reopening it offers what has been recorded since
   - Report the length of a recording on the item itself, not only on its media source
   - Report the codecs of a recording, so clients that support them play it directly instead of transcoding
