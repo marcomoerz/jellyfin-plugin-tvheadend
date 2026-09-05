@@ -93,7 +93,12 @@ internal sealed class FakeTvheadendServer : IAsyncDisposable
                 Array.Copy(lengthPrefix, frame, 4);
                 await _stream.ReadExactlyAsync(frame.AsMemory(4, (int)length), _shutdown.Token).ConfigureAwait(false);
 
-                HTSMessage request = HTSMessage.parse(frame, NullLogger<HTSMessage>.Instance);
+                HTSMessage? request = HTSMessage.parse(frame, NullLogger<HTSMessage>.Instance);
+                if (request is null)
+                {
+                    continue;
+                }
+
                 Interlocked.Increment(ref _requestCount);
 
                 _ = Task.Run(() => RespondAsync(request));

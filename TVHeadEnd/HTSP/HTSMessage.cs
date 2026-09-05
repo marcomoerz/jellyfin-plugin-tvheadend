@@ -1,7 +1,3 @@
-// TODO: not yet reviewed for nullability. Remove this line and fix the warnings when
-// touching this file; the project as a whole has nullable reference types enabled.
-#nullable disable
-
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections;
@@ -23,8 +19,10 @@ namespace TVHeadEnd.HTSP
         private const byte HMF_LIST = 5;
 
         private readonly Dictionary<string, object> _dict;
-        private ILogger<HTSMessage> _logger = null;
-        private byte[] _data = null;
+        private ILogger<HTSMessage>? _logger = null;
+
+        /// <summary>Cached wire bytes; dropped whenever a field changes.</summary>
+        private byte[]? _data = null;
 
         public HTSMessage()
         {
@@ -78,7 +76,7 @@ namespace TVHeadEnd.HTSP
             }
             catch(InvalidCastException)
             {
-                _logger.LogCritical("[TVHclient] Caught InvalidCastException for field name '{name}'. Expected 'System.Numerics.BigInteger' but got '{type}'",
+                _logger?.LogCritical("[TVHclient] Caught InvalidCastException for field name '{name}'. Expected 'System.Numerics.BigInteger' but got '{type}'",
                     name, _dict[name].GetType());
                 throw;
             }
@@ -123,12 +121,9 @@ namespace TVHeadEnd.HTSP
 
         public string getString(string name)
         {
-            object obj = _dict[name];
-            if (obj == null)
-            {
-                return null;
-            }
-            return obj.ToString();
+            // putField refuses null and the deserialiser always assigns, so the store cannot
+            // hold a null value.
+            return _dict[name].ToString() ?? string.Empty;
         }
 
         public IList<long?> getLongList(string name)
@@ -241,7 +236,7 @@ namespace TVHeadEnd.HTSP
             return sb.ToString();
         }
 
-        private string getValueString(object value, string pad)
+        private string getValueString(object? value, string pad)
         {
             if (value is byte[])
             {
@@ -261,7 +256,7 @@ namespace TVHeadEnd.HTSP
                 IDictionary dictVal = (IDictionary)value;
                 foreach (object key in dictVal.Keys)
                 {
-                    object currValue = dictVal[key];
+                    object? currValue = dictVal[key];
                     sb.Append(pad + key + " : " + getValueString(currValue, pad + "  ") + "\n");
                 }
                 return sb.ToString();
@@ -284,8 +279,8 @@ namespace TVHeadEnd.HTSP
             byte[] buf = new byte[0];
             foreach (object key in map.Keys)
             {
-                object value = map[key];
-                byte[] sub = serializeBinary(key.ToString(), value);
+                object? value = map[key];
+                byte[] sub = serializeBinary(key.ToString() ?? string.Empty, value);
                 buf = buf.Concat(sub).ToArray();
             }
             return buf;
@@ -303,7 +298,7 @@ namespace TVHeadEnd.HTSP
         }
 
 
-        private byte[] serializeBinary(string name, object value)
+        private byte[] serializeBinary(string name, object? value)
         {
             byte[] bName = GetBytes(name);
             byte[] bData = new byte[0];
@@ -394,7 +389,7 @@ namespace TVHeadEnd.HTSP
             return trimmed;
         }
 
-        public static HTSMessage parse(byte[] data, ILogger<HTSMessage> logger)
+        public static HTSMessage? parse(byte[] data, ILogger<HTSMessage> logger)
         {
             if (data.Length < 4)
             {
@@ -468,7 +463,7 @@ namespace TVHeadEnd.HTSP
                 }
 
                 //Get the key for the map (the name)
-                string name = null;
+                string name;
                 if (namelen == 0)
                 {
                     name = Convert.ToString(cnt++);
@@ -481,7 +476,7 @@ namespace TVHeadEnd.HTSP
                 }
 
                 //Get the actual content
-                object obj = null;
+                object obj;
                 byte[] bData = new byte[datalen];
                 buf.get(bData);
 

@@ -218,7 +218,7 @@ namespace TVHeadEnd
 
             _logger.LogDebug("[TVHclient] HTSConnectionHandler.GetChannelImage: channelId: {id}", channelId);
 
-            String channelIcon = _channelDataHelper.GetChannelIcon4ChannelId(channelId);
+            string? channelIcon = _channelDataHelper.GetChannelIcon4ChannelId(channelId);
 
             if (string.IsNullOrEmpty(channelIcon))
             {
@@ -227,7 +227,7 @@ namespace TVHeadEnd
 
             if (channelIcon.StartsWith("http"))
             {
-                return _channelDataHelper.GetChannelIcon4ChannelId(channelId);
+                return channelIcon;
             }
             else
             {
