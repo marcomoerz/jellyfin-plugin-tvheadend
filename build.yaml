@@ -1,7 +1,7 @@
 name: "TVHeadend"
 guid: "3fd018e5-5e78-4e58-b280-a0c068febee0"
 imageUrl: "https://repo.jellyfin.org/releases/plugin/images/jellyfin-plugin-tvheadend.png"
-version: 14
+version: 15
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 owner: "jellyfin"
@@ -11,11 +11,14 @@ category: "LiveTV"
 artifacts:
   - "TVHeadEnd.dll"
 changelog: |-
-  - Make deleting a recording idempotent and report failures to Jellyfin instead of only logging them, so recordings already gone from TVHeadend can be removed from the library
-  - Refresh the recordings channel when a recording changes, instead of serving a cached listing for up to three hours
-  - Use a GUID as the media source id of a recording instead of the numeric TVHeadend DVR id
-  - Do not keep waiting for the TVHeadend connection after the caller cancelled
-  - Re-read the plugin configuration when it changes instead of caching it until restart
+  - Report the codecs of a recording, so clients that support them play it directly instead of transcoding
+  - Derive the bitrate of a recording from its size and duration instead of leaving Jellyfin to assume 40 Mbit/s
+  - Allow watching a recording while it is still running, including when its end time is moved
+  - Probe a live TV channel once and remember what it contains, instead of before every playback
+  - Stop claiming every recording is interlaced, which by itself forced a transcode
+  - Refresh the recordings listing whenever TVHeadend reports a change
+  - Rework the HTSP connection: correlate replies reliably, fail fast instead of hanging, reconnect once
+  - Fix an encoding defect that corrupted numbers containing a zero byte on their way to TVHeadend
   - Jellyfin 10.11 support (#100) @crobibero
   - Restore subtitles and multiple audio that got destroyed in commit db8cd9af238813a7b141ba826168fdaa22f1509e on Feb 18, 2018 (#68) @roman-vanicek
   - Further Release 10.9.x improvements (#92) @lomion0815
